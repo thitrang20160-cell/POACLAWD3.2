@@ -1,290 +1,333 @@
 import { GoogleGenAI } from "@google/genai";
-import { CaseData, GlobalSettings, ReferenceCase, RiskAnalysis } from "../types";
+import { CaseData, GlobalSettings, ReferenceCase, RiskAnalysis, POAOutline, POAOutlineSection } from "../types";
 
-// --- DeepSeek ---
-const callDeepSeek = async (apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> => {
-  if (!apiKey) throw new Error("DeepSeek API Key 未配置");
-  const response = await fetch('https://api.deepseek.com/chat/completions', {
+// ── AI 调用层 ──────────────────────────────────────────────────────────
+const callDeepSeek = async (key: string, sys: string, user: string): Promise<string> => {
+  if (!key) throw new Error("DeepSeek API Key 未配置");
+  const r = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: "deepseek-chat",
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-      stream: false, temperature: 0.7, max_tokens: 8192
-    })
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify({ model: "deepseek-chat", messages: [{ role: "system", content: sys }, { role: "user", content: user }], temperature: 0.7, max_tokens: 8192 })
   });
-  if (!response.ok) {
-    const err = await response.json();
-    throw new Error(`DeepSeek Error: ${err.error?.message || response.statusText}`);
-  }
-  const data = await response.json();
-  return data.choices[0]?.message?.content || "DeepSeek returned empty content.";
+  if (!r.ok) { const e = await r.json(); throw new Error(`DeepSeek: ${e.error?.message || r.statusText}`); }
+  return (await r.json()).choices[0]?.message?.content || '';
 };
 
-// --- Gemini (FIXED model name) ---
-const callGemini = async (apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> => {
-  if (!apiKey) throw new Error("Google Gemini API Key 未配置");
-  const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.0-flash',  // FIXED: was 'gemini-3-flash-preview' (non-existent)
+const callGemini = async (key: string, sys: string, user: string): Promise<string> => {
+  if (!key) throw new Error("Gemini API Key 未配置");
+  const ai = new GoogleGenAI({ apiKey: key });
+  const r = await ai.models.generateContent({
+    model: 'gemini-2.0-flash',
     config: { maxOutputTokens: 8192, temperature: 0.7 },
-    contents: [{ role: 'user', parts: [{ text: systemPrompt + "\n\n" + userPrompt }] }]
+    contents: [{ role: 'user', parts: [{ text: sys + "\n\n" + user }] }]
   });
-  return response.text || "Generation failed.";
+  return r.text || '';
 };
 
-const callAI = async (provider: string, apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> => {
-  if (provider === 'deepseek') return callDeepSeek(apiKey, systemPrompt, userPrompt);
-  return callGemini(apiKey, systemPrompt, userPrompt);
+const callAI = (settings: GlobalSettings, sys: string, user: string): Promise<string> => {
+  const p = settings.selectedProvider || 'gemini';
+  const k = p === 'deepseek' ? settings.deepseekKey : settings.apiKey;
+  if (!k) throw new Error(`请先在设置页配置 ${p === 'deepseek' ? 'DeepSeek' : 'Gemini'} API Key`);
+  return p === 'deepseek' ? callDeepSeek(k, sys, user) : callGemini(k, sys, user);
 };
 
-// --- Main POA Generator ---
-export const generatePOA = async (
-  apiKey: string,
+// ── 工具函数 ──────────────────────────────────────────────────────────
+const buildBaseContext = (data: Partial<CaseData>, risk: RiskAnalysis, fileEvidence: string, similarCase?: ReferenceCase) => `
+**CASE METADATA**:
+- Store: ${data.storeName || '[Store Name]'} | Company: ${data.companyName || '[Company Name]'}
+- Case ID: ${data.caseId || 'N/A'} | Violation: ${data.violationType} | Supply Chain: ${data.supplyChain}
+- Affected: ${data.affectedCount || 'N/A'} | ODR Mode: ${data.isODRSuspension ? 'YES' : 'NO'}
+- Seller Explanation: ${data.sellerExplanation || 'Not provided'}
+- Actions Taken: ${data.actionsTaken || 'Not provided'}
+
+**RISK**: ${risk.level} (Score ${risk.score}/100) — ${risk.reasons.join('; ')}
+**TONE**: ${risk.toneInstruction}
+
+**EVIDENCE**:
+${fileEvidence || 'No file. Use placeholder order IDs like [Order #7739284651823].'}
+
+**WALMART NOTICE**:
+"""
+${data.suspensionEmail || '[No notice provided]'}
+"""
+
+${similarCase ? `**REFERENCE CASE** (successful appeal — adapt its argument structure):
+${similarCase.content.substring(0, 3000)}` : ''}
+`;
+
+// ═══════════════════════════════════════════════════════════════════════
+// 1. 生成 POA 大纲（两阶段第一步）
+// ═══════════════════════════════════════════════════════════════════════
+export const generatePOAOutline = async (
   data: Partial<CaseData>,
   settings: GlobalSettings,
-  riskAnalysis: RiskAnalysis,   // FIXED: pass full RiskAnalysis, not just reasons
+  risk: RiskAnalysis,
+  fileEvidence: string,
+  similarCase?: ReferenceCase
+): Promise<POAOutline> => {
+  const isODR = data.isODRSuspension === true;
+
+  const sys = `You are a senior Walmart appeal strategist.
+Your job is to create a strategic OUTLINE for a Plan of Action (POA), NOT the full document.
+The outline helps the operator review and adjust the argumentation strategy before AI writes the full text.
+
+Return ONLY valid JSON matching this exact schema (no markdown, no preamble):
+{
+  "overallStrategy": "One sentence describing the core appeal strategy",
+  "riskSummary": "One sentence summarizing the risk level and key concerns",
+  "sections": [
+    {
+      "id": "s1",
+      "title": "Section title (e.g. Root Cause Analysis)",
+      "keyPoints": ["Point 1", "Point 2", "Point 3"]
+    }
+  ]
+}
+
+${isODR
+  ? 'For ODR: produce exactly 3 sections (Root Cause, Immediate Actions, Future Plan). Each section gets 3-5 key points.'
+  : 'For standard: produce exactly 7 sections matching the 7-part POA structure. Each section gets 3-6 key points.'}
+
+Make key points SPECIFIC and DATA-DRIVEN based on the case context provided. NOT generic.`;
+
+  const user = buildBaseContext(data, risk, fileEvidence, similarCase);
+
+  const raw = await callAI(settings, sys, user);
+  // Strip possible markdown fences
+  const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  try {
+    return JSON.parse(clean) as POAOutline;
+  } catch {
+    // Fallback: construct a basic outline if JSON parsing fails
+    const fallback: POAOutline = {
+      overallStrategy: '请根据下方编辑区修改大纲策略',
+      riskSummary: `风险等级: ${risk.level}，请仔细核对违规内容`,
+      sections: isODR
+        ? [
+            { id: 's1', title: 'Root Cause Analysis', keyPoints: ['[请填写根本原因]'] },
+            { id: 's2', title: 'Immediate Actions', keyPoints: ['[请填写即时措施]'] },
+            { id: 's3', title: 'Future Prevention Plan', keyPoints: ['[请填写长期预防措施]'] },
+          ]
+        : [
+            { id: 's1', title: 'Opening Statement', keyPoints: ['[请填写]'] },
+            { id: 's2', title: 'Root Cause Analysis (3 Layers)', keyPoints: ['[请填写]'] },
+            { id: 's3', title: 'Immediate Actions (≥5)', keyPoints: ['[请填写]'] },
+            { id: 's4', title: 'Long-Term Prevention Plan (≥5)', keyPoints: ['[请填写]'] },
+            { id: 's5', title: 'Implementation Details', keyPoints: ['[请填写]'] },
+            { id: 's6', title: 'Conclusion', keyPoints: ['[请填写]'] },
+            { id: 's7', title: 'Signature', keyPoints: ['[公司名称、店铺名称、日期]'] },
+          ],
+    };
+    return fallback;
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// 2. 根据确认的大纲展开完整 POA（两阶段第二步）
+// ═══════════════════════════════════════════════════════════════════════
+export const expandOutlineToPOA = async (
+  outline: POAOutline,
+  data: Partial<CaseData>,
+  settings: GlobalSettings,
+  risk: RiskAnalysis,
   fileEvidence: string,
   similarCase?: ReferenceCase
 ): Promise<string> => {
-  const provider = settings.selectedProvider || 'gemini';
-  const effectiveKey = provider === 'deepseek' ? settings.deepseekKey : settings.apiKey;
-  if (!effectiveKey) throw new Error(`请先配置 ${provider === 'deepseek' ? 'DeepSeek' : 'Gemini'} API Key`);
-
   const isODR = data.isODRSuspension === true;
 
-  // --- Build strategy ---
-  let logicStrategy = "";
-  if (similarCase) {
-    // FIXED: was substring(0, 300), now 3000 — gives AI enough context to learn the argument structure
-    logicStrategy = `
-**REFERENCE LOGIC CLONING**:
-You have a verified successful appeal case. Adapt its core argument structure to this case.
-Change all specific details (names, dates, order IDs) to match the current case.
-Reference Logic (first 3000 chars):
-${similarCase.content.substring(0, 3000)}
-    `;
-  } else {
-    if (data.violationType === 'Performance') logicStrategy = settings.strategyLogistics;
-    else if (data.violationType === 'IP') logicStrategy = settings.strategyIP;
-    else logicStrategy = settings.strategyGeneral;
-  }
+  const outlineText = outline.sections.map((s, i) =>
+    `${i + 1}. ${s.title}\n${s.keyPoints.map(p => `   - ${p}`).join('\n')}`
+  ).join('\n\n');
 
-  // FIXED: Risk-adaptive tone instruction
-  const toneInstruction = riskAnalysis.toneInstruction;
+  const sys = `You are a Senior Walmart Appeal Attorney.
+The operator has APPROVED the following strategic outline. Your job is to expand it into a complete, professional POA.
 
-  let systemPrompt = "";
+**APPROVED OUTLINE** (follow this EXACTLY — do not add or remove sections):
+Overall Strategy: ${outline.overallStrategy}
+${outlineText}
 
-  if (isODR) {
-    systemPrompt = `
-You are a **Senior Walmart Appeal Specialist**.
-The user is appealing an **ODR / Delivery Performance Suspension** (Self-Fulfilled).
-
-**CRITICAL CONSTRAINT: CHARACTER LIMIT**
-- Each section MUST be between 700 and 950 characters.
-- DO NOT exceed 1000 characters per section.
-- Be concise, direct, and data-driven.
-
-**TONE DIRECTIVE**: ${toneInstruction}
-
-**CORE LOGIC (3-Point Failure Framework)**:
-1. Operational failure (carrier/logistics issue)
-2. Technical failure (system/software issue)
-3. Management failure (oversight/process gap)
-Each section MUST cite specific Order IDs or Tracking Numbers from the evidence.
-Auto-generate realistic names (e.g., Mr. Wang), specific dates, and tool names (e.g., ShipStation).
-
-**OUTPUT FORMAT** (STRICTLY follow these tags):
-[SECTION 1: ROOT CAUSE ANALYSIS]
-(700-950 chars. 3 failure layers. Cite Order IDs.)
-
-[SECTION 2: IMMEDIATE CORRECTIVE ACTIONS]
-(700-950 chars. Refunds, carrier changes, buyer outreach. Bullet points if space permits.)
-
-[SECTION 3: LONG-TERM PREVENTATIVE PLAN]
-(700-950 chars. Named person, specific tool, specific date. Show this is systemic, not reactive.)
-
-${logicStrategy ? `**STRATEGY**: ${logicStrategy}` : ''}
-    `;
-  } else {
-    systemPrompt = `
-You are a **Senior Litigation Attorney & Data Analyst** for Walmart Marketplace Sellers.
-Write a professional, structured Plan of Action (POA) that maximizes reinstatement probability.
-
-**TONE DIRECTIVE**: ${toneInstruction}
-
-**MANDATORY 7-SECTION STRUCTURE**:
-
-1. **Opening Statement**
-   - Acknowledge suspension, state store name and company, express full responsibility.
-
-2. **Root Cause Analysis**
-   - MANDATORY: Analyze failure from EXACTLY 3 distinct layers: Operational, Technical, Management.
-   - Bind evidence: cite specific Order IDs from the evidence pool.
-
-3. **Immediate Actions Taken** (Past Tense)
-   - MINIMUM 5 DISTINCT numbered actions.
-   - Cover: refunds, listing removal, staff meetings, inventory review, technical audits.
-   - Explain WHY each action was taken. Do not be brief.
-
-4. **Long-Term Preventative Plan** (Future-Oriented)
-   - MINIMUM 5 DISTINCT numbered measures.
-   - Cover: ERP/WMS software, supplier vetting, staff training schedules, QC protocols, packaging.
-   - Focus on systemic and process changes.
-
-5. **Implementation Details** (PROVES the plan is real)
-   - For EVERY point in Section 4, provide concrete execution detail.
-   - Auto-generate: "Compliance Manager **Mr. [Name]** appointed on [Date]"
-   - Auto-generate: "Subscribed to **[Tool: ShipStation/Sellbrite/Helium10]** on [Date]"
-   - Auto-generate: "Engaged **[Law Firm / Agency Name]** for IP audit"
-
-6. **Conclusion**
-   - Reiterate commitment to Walmart policy. Respectfully request reinstatement.
-
-7. **Signature**
-   - [Company Name], [Store Name], ${new Date().toLocaleDateString('en-US', {year:'numeric',month:'long',day:'numeric'})}
-
-**FORMAT RULES**:
-- No markdown code blocks. Use clean section headers like **I. Opening Statement**.
-- Write full paragraphs. Expand every point. Show thoroughness.
-
-${logicStrategy ? `**STRATEGY GUIDE**: ${logicStrategy}` : ''}
-    `;
-  }
-
-  const userPrompt = `
-**CASE METADATA**:
-- Store: ${data.storeName || '[Store Name]'}
-- Company: ${data.companyName || '[Company Name]'}
-- Walmart Case/Reference ID: ${data.caseId || 'N/A'}
-- Violation Type: ${data.violationType}
-- Supply Chain: ${data.supplyChain}
-- Appeal Mode: ${isODR ? "ODR / Self-Fulfilled Delivery Performance" : "Standard Account Suspension (7-Section)"}
-- Affected SKUs/Orders: ${data.affectedCount || 'Not specified'}
-- Supplier Info: ${data.supplierInfo || 'Not specified'}
-
-**SELLER'S EXPLANATION**:
-${data.sellerExplanation || 'Please deduce from violation type and context.'}
-
-**ACTIONS ALREADY TAKEN**:
-${data.actionsTaken || 'Please propose standard industry best-practice fixes.'}
-
-**RISK CONTEXT** (for tone calibration):
-Risk Level: ${riskAnalysis.level} (Score: ${riskAnalysis.score}/100)
-Risk Signals: ${riskAnalysis.reasons.join('; ')}
-
-**EVIDENCE POOL (RAW DATA)**:
-${fileEvidence || 'No file provided. Use realistic placeholder Order IDs like [Order #7739284651823].'}
-
-**WALMART SUSPENSION NOTICE**:
-"""
-${data.suspensionEmail || '[No suspension email provided]'}
-"""
-
-**INSTRUCTION**:
-Draft the complete POA now.
+**EXPANSION RULES**:
 ${isODR
-  ? "Strictly follow 3-section ODR format. Each section MUST be 700-950 characters."
-  : "Follow 7-section structure. Sections 3 & 4 MUST have ≥5 numbered points each. Section 5 MUST have specific names, tools, and dates."
-}
-  `;
+  ? `- ODR MODE: 3 sections, each 700-950 characters. Use [SECTION X: TITLE] tags.
+- Cite specific Order IDs or Tracking Numbers from evidence.
+- Auto-generate realistic names (Mr. Chen), dates, and tool names (ShipStation).`
+  : `- STANDARD MODE: 7 sections with headers like **I. Opening Statement**.
+- Section 3 (Immediate Actions): expand each key point into full paragraph with PAST TENSE. Minimum 5 distinct actions.
+- Section 4 (Future Plan): expand each key point into full paragraph. Minimum 5 measures.
+- Section 5 (Implementation Details): for EVERY Section 4 point, provide a specific name, date, and tool.
+- Auto-generate: "Compliance Manager Mr. [Name]" / "Subscribed to ShipStation on [Date]" / "Engaged Hansen & Associates IP Law Firm".`}
 
-  try {
-    return await callAI(provider, effectiveKey, systemPrompt, userPrompt);
-  } catch (error: any) {
-    throw new Error(`${provider === 'deepseek' ? 'DeepSeek' : 'Gemini'} 错误: ${error.message}`);
-  }
+**TONE**: ${risk.toneInstruction}
+Return ONLY the complete POA text. No preamble, no meta-comments.`;
+
+  const user = buildBaseContext(data, risk, fileEvidence, similarCase) +
+    `\n\n**CONFIRMED OUTLINE TO EXPAND**:\n${outlineText}`;
+
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  return (await callAI(settings, sys + `\n\nToday's date: ${today}`, user)).trim();
 };
 
-// --- CN Quality Report (FIXED: takes settings as param, not reads localStorage) ---
+// ═══════════════════════════════════════════════════════════════════════
+// 3. 一键生成完整 POA（兼容旧流程）
+// ═══════════════════════════════════════════════════════════════════════
+export const generatePOA = async (
+  _apiKey: string,
+  data: Partial<CaseData>,
+  settings: GlobalSettings,
+  risk: RiskAnalysis,
+  fileEvidence: string,
+  similarCase?: ReferenceCase
+): Promise<string> => {
+  // 内部直接调用两步流程，对外保持兼容
+  const outline = await generatePOAOutline(data, settings, risk, fileEvidence, similarCase);
+  return expandOutlineToPOA(outline, data, settings, risk, fileEvidence, similarCase);
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// 4. 中文质检报告（修正：通过 settings 参数传入，不读 localStorage）
+// ═══════════════════════════════════════════════════════════════════════
 export const generateCNExplanation = async (
   poa: string,
   suspensionEmail: string,
   settings: GlobalSettings
 ): Promise<string> => {
-  const provider = settings.selectedProvider || 'gemini';
-  const effectiveKey = provider === 'deepseek' ? settings.deepseekKey : settings.apiKey;
-  if (!effectiveKey) return "未配置 API Key，无法生成质检报告。";
+  const sys = '你是资深沃尔玛风控质检专家。用中文出具质检报告，并在末尾附加英文[ISSUES_FOR_AUTOFIX]供自动修复使用。';
+  const user = `请对以下 POA 进行严格质检：
 
-  const systemPrompt = "你是一名资深沃尔玛风控质检专家。请用中文作出清晰的质检报告，并在报告末尾附上一段英文的[ISSUES_FOR_AUTOFIX]，列出所有需要修正的问题，供自动修复模块使用。";
-
-  const userPrompt = `
-请对以下 POA 进行严格的中文质检，分为以下维度：
-
-**1. 完整性核查**：是否涵盖所有必要章节？
+**1. 完整性**：是否涵盖所有必要章节？
 
 **2. 细节核查**（最重要）：
-   - ✅ 是否有具体负责人姓名（如 Mr. Wang）？
-   - ✅ 是否有具体整改日期？
-   - ✅ 是否有具体物流商/工具名称（如 FedEx、ShipStation）？
-   - ✅ 是否引用了具体订单号？
-   - ❌ 如果以上任意一项缺失，请明确标记为「待补充」
+- ✅ 是否有具体负责人姓名（如 Mr. Wang）？
+- ✅ 是否有具体整改日期？
+- ✅ 是否有具体物流商/工具名（FedEx、ShipStation 等）？
+- ✅ 是否引用具体订单号？
+- ❌ 任意缺失 → 标记「待补充」
 
-**3. 逻辑核查**：是否清晰体现运营/技术/管理三层根本原因？
+**3. 逻辑核查**：是否体现运营/技术/管理三层根本原因？
 
-**4. 风险提示**：对 AI 自动生成的虚构细节（姓名/公司/日期），提醒客户核实或替换为真实信息。
+**4. 风险提示**：列出 AI 虚构细节（姓名/公司/日期），提醒核实。
 
-**5. 综合评分**：满分10分，结合上述维度给出评分和简评。
+**5. 综合评分**（满分10分）
 
 ---
-[待检 POA 内容]:
+[POA 内容]:
 ${poa.substring(0, 12000)}
 
 ---
-请在报告最后用英文附上：
+最后用英文附上：
 [ISSUES_FOR_AUTOFIX]
-(List all specific issues that need to be fixed in the POA, as clear English bullet points. If the POA looks good, write "No critical issues found.")
-  `;
+(Bullet points of specific issues. Write "No critical issues." if all good.)`;
 
-  try {
-    return await callAI(provider, effectiveKey, systemPrompt, userPrompt);
-  } catch {
-    return "质检报告生成失败 (API Error)";
-  }
+  try { return await callAI(settings, sys, user); }
+  catch { return '质检报告生成失败 (API Error)'; }
 };
 
-// --- Auto Fix POA (FIXED: extracts English issues list for better AI comprehension) ---
-export const autoFixPOA = async (
-  currentPOA: string,
-  feedback: string,
+// ═══════════════════════════════════════════════════════════════════════
+// 5. 一键精修 POA
+// ═══════════════════════════════════════════════════════════════════════
+export const autoFixPOA = async (poa: string, feedback: string, settings: GlobalSettings): Promise<string> => {
+  const issuesMatch = feedback.match(/\[ISSUES_FOR_AUTOFIX\]([\s\S]*?)(?:$)/i);
+  const issues = issuesMatch ? issuesMatch[1].trim() : feedback;
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  const sys = `You are a Senior Walmart Appeal Specialist refining a POA draft.
+AUTO-GENERATION (apply immediately, DO NOT ask user):
+- Missing name → "Compliance Manager Mr. Chen Wei"
+- Missing date → "${today}"
+- Missing tool → "ShipStation / Helium10"
+- Missing order ID → "[Order #7739284651823]"
+- Missing law firm → "Hansen & Associates IP Law Firm"
+Maintain original format ([SECTION X] for ODR, or 7-section for standard).
+Return ONLY the corrected POA text. No preamble.`;
+
+  const user = `[DRAFT POA]:\n${poa}\n\n[ISSUES TO FIX]:\n${issues}`;
+  return callAI(settings, sys, user);
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// 6. 失败案例 AI 分析（新增）
+// ═══════════════════════════════════════════════════════════════════════
+export const analyzeFailedCase = async (
+  caseData: CaseData,
   settings: GlobalSettings
 ): Promise<string> => {
-  const provider = settings.selectedProvider || 'gemini';
-  const effectiveKey = provider === 'deepseek' ? settings.deepseekKey : settings.apiKey;
-  if (!effectiveKey) throw new Error("API Key 未配置");
+  const sys = '你是资深沃尔玛申诉顾问，专门分析失败案例，提供改进方向。用中文输出分析报告。';
+  const user = `以下是一个申诉失败的 Walmart 案件，请深入分析失败原因并给出改进建议。
 
-  // FIXED: Extract the English issues section for clean AI input
-  const issuesMatch = feedback.match(/\[ISSUES_FOR_AUTOFIX\]([\s\S]*?)(?:$)/i);
-  const englishIssues = issuesMatch ? issuesMatch[1].trim() : feedback;
+**违规类型**: ${caseData.violationType}
+**违规邮件**:
+${caseData.suspensionEmail?.substring(0, 2000) || '未提供'}
 
-  const systemPrompt = `
-You are a **Senior Walmart Appeal Specialist** refining a POA draft.
-Your task: FIX the POA based on the provided issues list.
+**提交的 POA（节选）**:
+${caseData.poaContent?.substring(0, 4000) || '未提供'}
 
-**AUTO-GENERATION RULES** (Apply immediately, do NOT ask the user):
-- Missing person name → Invent: "Compliance Manager Mr. Chen Wei"
-- Missing date → Use: "${new Date().toLocaleDateString('en-US', {year:'numeric',month:'long',day:'numeric'})}"
-- Missing tool → Use: "ShipStation for shipping / Helium10 for listing management"
-- Missing order IDs → Use placeholder: "[Order #7739284651823]"
-- Missing law firm → Use: "Hansen & Associates IP Law Firm"
+**质检报告**:
+${caseData.cnExplanation?.substring(0, 2000) || '未提供'}
 
-**FORMAT RULES**:
-- If input POA uses [SECTION X] tags (ODR style) → MAINTAIN that format and character limits.
-- Otherwise → Maintain standard 7-section letter format.
-- Return ONLY the complete corrected POA. No preamble, no comments.
-  `;
+请按以下结构输出分析：
 
-  const userPrompt = `
-[DRAFT POA TO FIX]:
-${currentPOA}
+## 🔍 失败原因分析
+（列出 3-5 个可能导致失败的核心原因，结合 POA 内容具体指出）
 
-[ISSUES TO ADDRESS]:
-${englishIssues}
-  `;
+## ⚠️ 关键缺失点
+（POA 中缺少了哪些 Walmart 审核官最看重的内容）
+
+## 💡 下次改进建议
+（如果重新申诉，应该如何调整策略和内容，给出具体操作建议）
+
+## 📋 参考成功案例特征
+（此类违规的成功申诉通常有哪些共同特征，帮助下次参考）`;
+
+  return callAI(settings, sys, user);
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// 7. 策略自动迭代（新增）
+// ═══════════════════════════════════════════════════════════════════════
+export const iterateStrategies = async (
+  successCases: CaseData[],
+  currentStrategies: { performance: string; ip: string; general: string },
+  settings: GlobalSettings
+): Promise<{ performance: string; ip: string; general: string }> => {
+  const performanceCases = successCases.filter(c => c.violationType === 'Performance' || c.isODRSuspension);
+  const ipCases = successCases.filter(c => c.violationType === 'IP' || c.violationType === 'Counterfeit');
+
+  const buildSample = (cases: CaseData[], max = 3) =>
+    cases.slice(0, max).map((c, i) =>
+      `案例${i + 1}（${c.violationType}）:\n${c.poaContent?.substring(0, 800) || '内容缺失'}`
+    ).join('\n\n---\n\n');
+
+  const sys = '你是 Walmart 申诉策略专家。通过分析成功案例，提炼高效的申诉策略模板。只输出 JSON，不输出任何其他内容。';
+  const user = `以下是历史成功申诉案例（共 ${successCases.length} 个）。
+请分析这些成功案例的共同特征，更新以下三个策略描述。
+
+**Performance/ODR 成功案例样本**:
+${buildSample(performanceCases) || '暂无此类成功案例，保持现有策略'}
+
+**IP/Counterfeit 成功案例样本**:
+${buildSample(ipCases) || '暂无此类成功案例，保持现有策略'}
+
+**其他类型成功案例**:
+${buildSample(successCases.filter(c => c.violationType === 'Related' || c.violationType === 'Other'))}
+
+**当前策略（供参考）**:
+Performance: ${currentStrategies.performance}
+IP: ${currentStrategies.ip}
+General: ${currentStrategies.general}
+
+请输出一个 JSON 对象，键为 "performance"、"ip"、"general"，值为优化后的中文策略描述（每条 100-200 字）。
+只输出 JSON，不要任何注释或 markdown 代码块。`;
 
   try {
-    return await callAI(provider, effectiveKey, systemPrompt, userPrompt);
-  } catch (error: any) {
-    throw new Error(`Auto-Fix Failed: ${error.message}`);
+    const raw = await callAI(settings, sys, user);
+    const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(clean);
+    return {
+      performance: parsed.performance || currentStrategies.performance,
+      ip: parsed.ip || currentStrategies.ip,
+      general: parsed.general || currentStrategies.general,
+    };
+  } catch {
+    throw new Error('策略解析失败，请重试');
   }
 };
