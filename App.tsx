@@ -12,10 +12,13 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, L
 
 import {
   loadCases, saveCases, loadSettings, saveSettings, loadReferences, saveReferences,
-  loginUser, registerUser, getCurrentSession, setCurrentSession,
-  getAllUsers, deleteUser, updateUser, updateUserPassword, verifyPassword,
-  loadStoreProfiles, saveStoreProfiles, addStoreProfile, deleteStoreProfile,
+  getCurrentSession, setCurrentSession,
+  getAllUsers, updateUser, verifyPassword,
+  loadStoreProfiles, addStoreProfile, deleteStoreProfile,
 } from './services/storageService';
+import {
+  loginUserCloud, registerUserCloud, updateUserCloud, deleteUserCloud, updatePasswordCloud,
+} from './services/authService';
 import {
   generatePOAOutline, expandOutlineToPOA, generateCNExplanation,
   autoFixPOA, analyzeFailedCase, iterateStrategies,
@@ -240,12 +243,12 @@ export default function App() {
   // ── Auth ──────────────────────────────────────────────────────────────
   const logout = () => { setCurrentSession(null); setUser(null); setCases([]); setRefs([]); setTab(TABS.DASHBOARD); };
 
-  const handleChangePwd = (e: React.FormEvent) => {
+  const handleChangePwd = async (e: React.FormEvent) => {
     e.preventDefault(); if (!user) return;
     if (!verifyPassword(user.username, pwdForm.old, user.passwordHash)) return alert('旧密码错误');
     if (pwdForm.new.length < 4) return alert('新密码至少4位');
     if (pwdForm.new !== pwdForm.confirm) return alert('两次密码不一致');
-    const u = updateUserPassword(user.id, pwdForm.new);
+    const u = await updatePasswordCloud(user.id, pwdForm.new);
     if (u) { setUser(u); setCurrentSession(u); }
     setPwdOpen(false); setPwdForm({ old: '', new: '', confirm: '' }); alert('密码修改成功！');
   };
@@ -254,10 +257,9 @@ export default function App() {
   const createUser = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const u = registerUser(newUserForm.username, newUserForm.password, newUserForm.role, newUserForm.companyName);
+      await registerUserCloud(newUserForm.username, newUserForm.password, newUserForm.role, newUserForm.companyName);
       setUserList(getAllUsers()); setIsAddingUser(false);
       setNewUserForm({ username: '', password: '', role: 'client', companyName: '' });
-      if (settings.supabaseUrl) await CloudService.upsertUser(settings, u);
       alert('账号创建成功！');
     } catch (err: any) { alert(err.message); }
   };
@@ -267,24 +269,21 @@ export default function App() {
     const t = userList.find(u => u.id === id); if (!t) return;
     if (user?.role === 'admin' && t.role !== 'client') return alert('权限不足');
     if (!window.confirm(`确定删除 [${t.username}]？`)) return;
-    deleteUser(id); setUserList(getAllUsers());
-    if (settings.supabaseUrl) await CloudService.deleteUser(settings, id);
+    await deleteUserCloud(id); setUserList(getAllUsers());
   };
 
   const saveEditUser = async (id: string) => {
     const t = userList.find(u => u.id === id); if (!t) return;
     if (user?.role === 'admin' && editUserForm.role !== 'client') return alert('权限不足');
     const updated = { ...t, role: editUserForm.role, companyName: editUserForm.companyName };
-    updateUser(updated);
+    await updateUserCloud(updated);
     setUserList(getAllUsers()); setEditingUserId(null);
-    if (settings.supabaseUrl) await CloudService.upsertUser(settings, updated);
   };
 
   const resetPwd = async (u: UserType) => {
     if (user?.role === 'admin' && u.role !== 'client') return alert('权限不足');
     const np = prompt(`新密码 (${u.username}):`); if (!np || np.length < 4) return alert('密码至少4位');
-    const updated = updateUserPassword(u.id, np);
-    if (updated && settings.supabaseUrl) await CloudService.upsertUser(settings, updated);
+    await updatePasswordCloud(u.id, np);
     alert('已重置');
   };
 
@@ -1298,25 +1297,62 @@ export default function App() {
 
 // ── Login Screen ─────────────────────────────────────────────────────────
 function Login({ onLogin }: { onLogin: (u: UserType) => void }) {
-  const [isReg, setIsReg] = useState(false);
-  const [un, setUn] = useState(''); const [pw, setPw] = useState(''); const [show, setShow] = useState(false); const [loading, setLoading] = useState(false);
+  const [un, setUn] = useState('');
+  const [pw, setPw] = useState('');
+  const [show, setShow] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [errMsg, setErrMsg] = useState('');
+
   const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); setLoading(true);
-    try { onLogin(isReg ? registerUser(un.trim(), pw, 'client', '') : loginUser(un.trim(), pw)); }
-    catch (err: any) { alert(err.message); } finally { setLoading(false); }
+    e.preventDefault();
+    setLoading(true); setErrMsg('');
+    try {
+      const u = await loginUserCloud(un.trim(), pw);
+      onLogin(u);
+    } catch (err: any) {
+      setErrMsg(err.message ?? '登录失败');
+    } finally { setLoading(false); }
   };
+
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-slate-950">
       <div className="absolute inset-0 bg-gradient-to-br from-blue-950/30 via-transparent to-indigo-950/20 pointer-events-none"/>
       <div className="w-full max-w-sm p-8 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-2xl backdrop-blur-xl relative">
-        <div className="text-center mb-8"><h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-500">泽远跨境</h1><p className="text-slate-500 text-xs mt-1">POA 智能申诉系统 V7</p></div>
+        <div className="text-center mb-8">
+          <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-500">泽远跨境</h1>
+          <p className="text-slate-500 text-xs mt-1">POA 智能申诉系统 V7</p>
+        </div>
         <form onSubmit={submit} className="space-y-4">
-          <input required className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 outline-none focus:border-blue-500/50 transition-colors" placeholder="账号" value={un} onChange={e=>setUn(e.target.value)}/>
-          <div className="relative"><input required type={show?'text':'password'} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 pr-10 outline-none focus:border-blue-500/50 transition-colors" placeholder="密码" value={pw} onChange={e=>setPw(e.target.value)}/><button type="button" onClick={()=>setShow(p=>!p)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500">{show?<EyeOff size={15}/>:<Eye size={15}/>}</button></div>
-          {isReg && <div className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">首个注册账号自动成为<strong>超级管理员</strong></div>}
-          <button type="submit" disabled={loading} className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-60 text-white font-bold py-3 rounded-xl transition-all flex justify-center items-center gap-2">{loading&&<Loader2 size={17} className="animate-spin"/>}{isReg?'注册':'登录'}</button>
+          <input
+            required
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 outline-none focus:border-blue-500/50 transition-colors"
+            placeholder="账号"
+            value={un} onChange={e => setUn(e.target.value)}
+          />
+          <div className="relative">
+            <input
+              required
+              type={show ? 'text' : 'password'}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 pr-10 outline-none focus:border-blue-500/50 transition-colors"
+              placeholder="密码"
+              value={pw} onChange={e => setPw(e.target.value)}
+            />
+            <button type="button" onClick={() => setShow(p => !p)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500">
+              {show ? <EyeOff size={15}/> : <Eye size={15}/>}
+            </button>
+          </div>
+          {errMsg && (
+            <div className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">{errMsg}</div>
+          )}
+          <button
+            type="submit" disabled={loading}
+            className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-60 text-white font-bold py-3 rounded-xl transition-all flex justify-center items-center gap-2"
+          >
+            {loading && <Loader2 size={17} className="animate-spin"/>}
+            {loading ? '登录中...' : '登录'}
+          </button>
         </form>
-        <div className="mt-4 text-center"><button onClick={()=>setIsReg(p=>!p)} className="text-slate-600 hover:text-slate-400 text-xs transition-colors">{isReg?'已有账号？返回登录':'创建新账号'}</button></div>
+        <p className="mt-5 text-center text-slate-700 text-[11px]">没有账号？请联系管理员开通</p>
       </div>
     </div>
   );

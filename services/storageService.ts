@@ -8,12 +8,13 @@ const SESSION_KEY   = 'wmt_poa_session_v2';
 const PROFILES_KEY  = 'wmt_poa_store_profiles_v1'; // ── 新增
 
 // ── 密码哈希 (客户端安全) ─────────────────────────────────────────────
-const hashPassword = (username: string, password: string): string => {
+export const hashPasswordPublic = (username: string, password: string): string => {
   const raw = `zeyuan_2025:${username.toLowerCase()}:${password}`;
   let h = 0;
   for (let i = 0; i < raw.length; i++) { h = ((h << 5) - h) + raw.charCodeAt(i); h |= 0; }
   return btoa(Math.abs(h).toString() + raw.length.toString(16));
 };
+const hashPassword = hashPasswordPublic;
 
 export const verifyPassword = (username: string, password: string, storedHash: string): boolean =>
   hashPassword(username, password) === storedHash;
