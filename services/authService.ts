@@ -66,37 +66,58 @@ export const pushUserToCloud = async (cfg: { url: string; key: string }, user: U
 // 云端登录
 // 流程：① 从云端取用户 → ② 本地验密 → ③ 缓存到 localStorage
 // ─────────────────────────────────────────────────────────────────────
+// 查询云端用户总数（判断是否为全新系统）
+const fetchCloudUserCount = async (cfg: { url: string; key: string }): Promise<number> => {
+  try {
+    const r = await sbReq(cfg, 'users?select=id', {
+      headers: { Prefer: 'count=exact' },
+    });
+    const countHeader = r.headers.get('content-range'); // e.g. "0-9/42"
+    if (countHeader) {
+      const total = parseInt(countHeader.split('/')[1] ?? '0', 10);
+      if (!isNaN(total)) return total;
+    }
+    // 回退：直接数结果
+    if (r.ok) { const data = await r.json(); return data.length; }
+    return -1; // 出错时返回 -1，表示未知
+  } catch { return -1; }
+};
+
 export const loginUserCloud = async (username: string, password: string): Promise<User> => {
   const name = username.trim();
   const cfg  = getCloudConfig();
 
   if (cfg) {
+    // ① 先查这个用户名是否存在于云端
     const cloudUser = await fetchCloudUser(cfg, name);
 
     if (cloudUser) {
+      // 找到了 → 验密码
       if (!verifyPassword(cloudUser.username, password, cloudUser.passwordHash)) {
         throw new Error('账号或密码错误');
       }
-      updateUser(cloudUser);   // 写入本地缓存
+      updateUser(cloudUser);
       return cloudUser;
     }
 
-    // 云端无此用户 → 看是否为系统第一位（初始化场景）
-    const localAll = loadUsers();
-    if (localAll.length === 0) {
-      // 建超管并同步到云端
+    // ② 云端没有这个用户 → 检查云端是否完全为空（全新系统初始化）
+    const cloudTotal = await fetchCloudUserCount(cfg);
+    if (cloudTotal === 0) {
+      // 系统第一个用户，任意账号密码均成为超级管理员
       const u = localRegister(name, password, 'super_admin', '系统管理员');
       await pushUserToCloud(cfg, u);
       return u;
     }
 
-    // 云端没有但本地有（未迁移的旧账号）→ 尝试本地验证后顺手推云端
+    // ③ 云端有其他用户但没有这个用户名 → 尝试用本地缓存登录（旧数据迁移）
+    const localAll = loadUsers();
     const localUser = localAll.find(u => u.username.toLowerCase() === name.toLowerCase());
     if (localUser && verifyPassword(localUser.username, password, localUser.passwordHash)) {
-      await pushUserToCloud(cfg, localUser);
+      await pushUserToCloud(cfg, localUser);  // 顺手迁移到云端
       return localUser;
     }
 
+    // ④ 确实不存在
     throw new Error('账号不存在，请联系管理员创建账号');
   }
 
