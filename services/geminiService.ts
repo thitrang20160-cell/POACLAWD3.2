@@ -85,8 +85,14 @@ Return ONLY valid JSON matching this exact schema (no markdown, no preamble):
 }
 
 ${isODR
-  ? 'For ODR: produce exactly 3 sections (Root Cause, Immediate Actions, Future Plan). Each section gets 3-5 key points.'
-  : 'For standard: produce exactly 7 sections matching the 7-part POA structure. Each section gets 3-6 key points.'}
+  ? 'For ODR: produce exactly 3 sections (Root Cause, Immediate Actions, Future Plan). Each section gets 4-6 key points. IMPORTANT: key points must be detailed enough that when expanded into paragraphs they will reach 700-950 characters per section — avoid vague one-liners.'
+  : `For standard account suspension: produce EXACTLY 5 sections in this order:
+  1. Opening Statement — 1-2 key points (acknowledge suspension, state responsibility, reference track record)
+  2. Root Cause Analysis — MINIMUM 3 key points (each must be a distinct, specific cause — operational/technical/management layer)
+  3. Immediate Corrective Actions Taken — MINIMUM 5 key points (past tense, actions already completed)
+  4. Future Prevention Plan — MINIMUM 5 key points (future-oriented measures to prevent recurrence)
+  5. Closing Statement — 1-2 key points (reaffirm commitment, request reinstatement)
+  DO NOT add extra sections. DO NOT merge sections. Keep exactly these 5.`}
 
 Make key points SPECIFIC and DATA-DRIVEN based on the case context provided. NOT generic.`;
 
@@ -109,13 +115,11 @@ Make key points SPECIFIC and DATA-DRIVEN based on the case context provided. NOT
             { id: 's3', title: 'Future Prevention Plan', keyPoints: ['[请填写长期预防措施]'] },
           ]
         : [
-            { id: 's1', title: 'Opening Statement', keyPoints: ['[请填写]'] },
-            { id: 's2', title: 'Root Cause Analysis (3 Layers)', keyPoints: ['[请填写]'] },
-            { id: 's3', title: 'Immediate Actions (≥5)', keyPoints: ['[请填写]'] },
-            { id: 's4', title: 'Long-Term Prevention Plan (≥5)', keyPoints: ['[请填写]'] },
-            { id: 's5', title: 'Implementation Details', keyPoints: ['[请填写]'] },
-            { id: 's6', title: 'Conclusion', keyPoints: ['[请填写]'] },
-            { id: 's7', title: 'Signature', keyPoints: ['[公司名称、店铺名称、日期]'] },
+            { id: 's1', title: 'Opening Statement', keyPoints: ['Acknowledge the suspension and take full responsibility', 'Reference positive track record to establish credibility'] },
+            { id: 's2', title: 'Root Cause Analysis', keyPoints: ['[根本原因 1 — 运营层]', '[根本原因 2 — 技术层]', '[根本原因 3 — 管理层]'] },
+            { id: 's3', title: 'Immediate Corrective Actions Taken', keyPoints: ['[即时措施 1]', '[即时措施 2]', '[即时措施 3]', '[即时措施 4]', '[即时措施 5]'] },
+            { id: 's4', title: 'Future Prevention Plan', keyPoints: ['[未来计划 1]', '[未来计划 2]', '[未来计划 3]', '[未来计划 4]', '[未来计划 5]'] },
+            { id: 's5', title: 'Closing Statement', keyPoints: ['Reaffirm commitment to Walmart policies', 'Respectfully request reinstatement'] },
           ],
     };
     return fallback;
@@ -148,14 +152,20 @@ ${outlineText}
 
 **EXPANSION RULES**:
 ${isODR
-  ? `- ODR MODE: 3 sections, each 700-950 characters. Use [SECTION X: TITLE] tags.
+  ? `- ODR MODE: Exactly 3 sections. Use [SECTION X: TITLE] tags.
+- CRITICAL CHARACTER REQUIREMENT: Each section body MUST be between 700 and 950 characters (count the actual characters, excluding the [SECTION X: TITLE] tag line itself).
+- To reach 700+ characters: write in FULL SENTENCES, not bullet points. Expand every point with explanation of WHY the action was taken and HOW it prevents recurrence. Include specific Order IDs, dates, names, and tool names.
+- Do NOT use bullet points or numbered lists within ODR sections — only flowing paragraphs.
+- After drafting, MENTALLY COUNT the characters in each section. If any section is below 700, ADD more detail until it reaches 700-950.
 - Cite specific Order IDs or Tracking Numbers from evidence.
-- Auto-generate realistic names (Mr. Chen), dates, and tool names (ShipStation).`
-  : `- STANDARD MODE: 7 sections with headers like **I. Opening Statement**.
-- Section 3 (Immediate Actions): expand each key point into full paragraph with PAST TENSE. Minimum 5 distinct actions.
-- Section 4 (Future Plan): expand each key point into full paragraph. Minimum 5 measures.
-- Section 5 (Implementation Details): for EVERY Section 4 point, provide a specific name, date, and tool.
-- Auto-generate: "Compliance Manager Mr. [Name]" / "Subscribed to ShipStation on [Date]" / "Engaged Hansen & Associates IP Law Firm".`}
+- Auto-generate realistic names (Mr. Chen Wei), specific dates, and tool names (ShipStation, FedEx).`
+  : `- STANDARD 5-SECTION MODE. Use bold Roman numeral headers: **I. Opening Statement**, **II. Root Cause Analysis**, **III. Immediate Corrective Actions Taken**, **IV. Future Prevention Plan**, **V. Closing Statement**.
+- DO NOT create any additional sections. DO NOT split or rename sections. Exactly 5.
+- Section II (Root Cause Analysis): MINIMUM 3 numbered points. Each cause must be distinct and specific. Analyze from operational, technical, and management failure layers. Cite Order IDs from evidence where possible.
+- Section III (Immediate Corrective Actions Taken): MINIMUM 5 numbered points written in PAST TENSE (already completed). Each action must directly address a root cause identified in Section II. Include specific dates, names, and tools. Each action MUST include a concrete timeline marker using one of: "within 24 hours", "within 1-3 days", "within 1 week" — inserted naturally into the sentence.
+- Section IV (Future Prevention Plan): MINIMUM 5 numbered points written in FUTURE/PRESENT PROGRESSIVE tense. Each measure must be concrete with a named owner, specific date, and specific tool or system. Each measure MUST specify its implementation timeline using one of: "within 1 week", "within 2 weeks", "within 1 month", "within 3 months", "quarterly" — stated explicitly in the point. Auto-generate if not provided: "Compliance Manager Mr. Chen Wei", "ShipStation", "2026 dates".
+- Section V (Closing): Short paragraph. Reaffirm Walmart policy commitment. Request reinstatement. Offer weekly performance updates.
+- Auto-generate realistic specifics throughout: person names, tool names (ShipStation, Helium10, Azure DevOps, Power BI), law firm (Hansen & Associates), and dates.`}
 
 **TONE**: ${risk.toneInstruction}
 Return ONLY the complete POA text. No preamble, no meta-comments.`;
@@ -164,7 +174,42 @@ Return ONLY the complete POA text. No preamble, no meta-comments.`;
     `\n\n**CONFIRMED OUTLINE TO EXPAND**:\n${outlineText}`;
 
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-  return (await callAI(settings, sys + `\n\nToday's date: ${today}`, user)).trim();
+  let result = (await callAI(settings, sys + `\n\nToday's date: ${today}`, user)).trim();
+
+  // ── ODR 后置验证：检查每段是否达到 700 字符，不足则自动补写 ──────
+  if (isODR) {
+    const sectionRegex = /(\[SECTION \d+:[^\]]+\])([\s\S]*?)(?=\[SECTION \d+:|$)/gi;
+    const sections: { tag: string; body: string }[] = [];
+    let match;
+    while ((match = sectionRegex.exec(result)) !== null) {
+      sections.push({ tag: match[1], body: match[2].trim() });
+    }
+
+    // Check if any section is under 700 chars
+    const shortSections = sections.filter(s => s.body.length < 700);
+    if (shortSections.length > 0) {
+      const fixPrompt = `The following ODR appeal sections are too short (must be 700-950 characters each).
+Expand ONLY the short sections by adding more specific detail, explanations, and context. Keep the [SECTION X: TITLE] tags.
+Do NOT shorten any section that is already 700+ characters.
+
+Current draft:
+${result}
+
+Short sections that need expansion:
+${shortSections.map(s => `${s.tag} — current length: ${s.body.length} chars (need at least 700)`).join('\n')}
+
+Return the complete corrected 3-section ODR appeal with all sections at 700-950 characters.`;
+
+      try {
+        const expanded = await callAI(settings, 'You are a Walmart appeal specialist. Expand the short sections to meet the 700-950 character requirement. Return only the complete POA text.', fixPrompt);
+        result = expanded.trim();
+      } catch {
+        // If auto-expand fails, return original result
+      }
+    }
+  }
+
+  return result;
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -194,7 +239,13 @@ export const generateCNExplanation = async (
   const sys = '你是资深沃尔玛风控质检专家。用中文出具质检报告，并在末尾附加英文[ISSUES_FOR_AUTOFIX]供自动修复使用。';
   const user = `请对以下 POA 进行严格质检：
 
-**1. 完整性**：是否涵盖所有必要章节？
+**1. 结构完整性**：POA 必须包含且仅包含以下 5 个章节：
+- ✅ I. 开头陈述 (Opening Statement)
+- ✅ II. 原因分析 (Root Cause Analysis) — 至少 3 个独立原因
+- ✅ III. 已采取的措施 (Immediate Corrective Actions Taken) — 至少 5 个措施（过去式）
+- ✅ IV. 未来计划 (Future Prevention Plan) — 至少 5 个计划（未来式）
+- ✅ V. 结尾 (Closing Statement)
+- ❌ 如有多余章节或章节缺失，标记为「结构错误」
 
 **2. 细节核查**（最重要）：
 - ✅ 是否有具体负责人姓名（如 Mr. Wang）？
@@ -203,7 +254,7 @@ export const generateCNExplanation = async (
 - ✅ 是否引用具体订单号？
 - ❌ 任意缺失 → 标记「待补充」
 
-**3. 逻辑核查**：是否体现运营/技术/管理三层根本原因？
+**3. 逻辑核查**：原因分析是否体现运营/技术/管理三层根本原因？III 中每条措施是否能直接对应 II 中某条原因？
 
 **4. 风险提示**：列出 AI 虚构细节（姓名/公司/日期），提醒核实。
 
@@ -231,13 +282,21 @@ export const autoFixPOA = async (poa: string, feedback: string, settings: Global
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
   const sys = `You are a Senior Walmart Appeal Specialist refining a POA draft.
+TARGET STRUCTURE — The corrected POA MUST have exactly these 5 sections:
+  I. Opening Statement
+  II. Root Cause Analysis (minimum 3 numbered causes)
+  III. Immediate Corrective Actions Taken (minimum 5 numbered actions, past tense)
+  IV. Future Prevention Plan (minimum 5 numbered measures, future/present progressive)
+  V. Closing Statement
+
 AUTO-GENERATION (apply immediately, DO NOT ask user):
 - Missing name → "Compliance Manager Mr. Chen Wei"
 - Missing date → "${today}"
-- Missing tool → "ShipStation / Helium10"
+- Missing tool → "ShipStation / Helium10 / Azure DevOps / Power BI"
 - Missing order ID → "[Order #7739284651823]"
 - Missing law firm → "Hansen & Associates IP Law Firm"
-Maintain original format ([SECTION X] for ODR, or 7-section for standard).
+If draft has more than 5 sections (e.g. 7 sections), MERGE extra sections into the correct 5.
+Maintain [SECTION X] tags if ODR mode (3 sections).
 Return ONLY the corrected POA text. No preamble.`;
 
   const user = `[DRAFT POA]:\n${poa}\n\n[ISSUES TO FIX]:\n${issues}`;

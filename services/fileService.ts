@@ -28,14 +28,26 @@ export const parseFile = async (file: File): Promise<string> => {
         const fileName = file.name.toLowerCase();
         let rawText = "";
 
-        // Handle Excel Files
+        // Handle Excel Files — read ALL sheets, not just the first one
         if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.csv')) {
           const workbook = XLSX.read(data, { type: 'array' });
-          const sheetName = workbook.SheetNames[0];
-          const sheet = workbook.Sheets[sheetName];
-          const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-          
-          rawText = JSON.stringify(jsonData.slice(0, 100)); // Increased limit to 100 rows
+          const allSheetTexts: string[] = [];
+
+          for (const sheetName of workbook.SheetNames) {
+            const sheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
+            if (jsonData.length === 0) continue;
+
+            // Convert each sheet to a readable table string (not raw JSON)
+            const rows = jsonData.slice(0, 150); // up to 150 rows per sheet
+            const tableText = rows.map(row =>
+              (row as any[]).map(cell => (cell === null || cell === undefined ? '' : String(cell))).join('\t')
+            ).join('\n');
+
+            allSheetTexts.push(`[SHEET: ${sheetName}]\n${tableText}`);
+          }
+
+          rawText = allSheetTexts.join('\n\n');
         } 
         // Handle Word Documents (.docx)
         else if (fileName.endsWith('.docx')) {
