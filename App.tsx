@@ -21,7 +21,7 @@ import {
 } from './services/authService';
 import {
   generatePOAOutline, expandOutlineToPOA, generateCNExplanation,
-  autoFixPOA, analyzeFailedCase, iterateStrategies,
+  autoFixPOA, analyzeFailedCase, iterateStrategies, findTopReferences,
 } from './services/geminiService';
 import { CloudService } from './services/cloudService';
 import { parseFile } from './services/fileService';
@@ -335,7 +335,11 @@ export default function App() {
     setRisk(r); setIsGenOutline(true);
     try {
       const similarCase = refs.find(r => r.id === selRefId);
-      const o = await generatePOAOutline(form, settings, r, fileCnt, similarCase);
+      // 自动从案例库检索最相关的Top3案例（优先用手选的，否则自动匹配）
+      const topRefs = selRefId
+        ? undefined  // 手动指定了就用手选的单案例
+        : findTopReferences(refs, form.violationType || 'Performance', form.suspensionEmail || '', 3);
+      const o = await generatePOAOutline(form, settings, r, fileCnt, similarCase, topRefs);
       setEditOutline(JSON.parse(JSON.stringify(o)));
       setGenPhase('outline');
     } catch (e: any) { alert('大纲生成失败: ' + e.message); }
@@ -348,7 +352,10 @@ export default function App() {
     setIsExpanding(true);
     try {
       const similarCase = refs.find(r => r.id === selRefId);
-      const full = await expandOutlineToPOA(editOutline, form, settings, r, fileCnt, similarCase);
+      const topRefs = selRefId
+        ? undefined
+        : findTopReferences(refs, form.violationType || 'Performance', form.suspensionEmail || '', 3);
+      const full = await expandOutlineToPOA(editOutline, form, settings, r, fileCnt, similarCase, topRefs);
       setPoa(full);
       const cnRpt = await generateCNExplanation(full, form.suspensionEmail || '', settings);
       setCn(cnRpt); setGenPhase('full');
@@ -464,10 +471,10 @@ export default function App() {
   const handleIterateStrategy = async () => {
     const okCases = cases.filter(c => c.status === 'success' && c.poaContent);
     if (okCases.length < 2) return alert('至少需要 2 个已标记为「申诉成功」的案件才能进行策略迭代。');
-    if (!window.confirm(`将基于 ${okCases.length} 个成功案件自动优化三套申诉策略，确认继续？`)) return;
+    if (!window.confirm(`将基于 ${okCases.length} 个成功案件 + ${refs.length} 个案例库文件自动优化三套申诉策略，确认继续？`)) return;
     setIsIterating(true);
     try {
-      const draft = await iterateStrategies(okCases, { performance: settings.strategyLogistics, ip: settings.strategyIP, general: settings.strategyGeneral }, settings);
+      const draft = await iterateStrategies(okCases, { performance: settings.strategyLogistics, ip: settings.strategyIP, general: settings.strategyGeneral }, settings, refs);
       setStratDraft(draft);
     } catch (e: any) { alert('策略迭代失败: ' + e.message); } finally { setIsIterating(false); }
   };
@@ -921,11 +928,24 @@ export default function App() {
                   <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer"><input type="checkbox" className="accent-purple-500" checked={autoMatch} onChange={e => setAutoMatch(e.target.checked)}/> 智能匹配</label>
                 </div>
                 <select className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-300 text-xs outline-none" value={selRefId} onChange={e => setSelRefId(e.target.value)}>
-                  <option value="">— 不使用参考案例 —</option>
+                  <option value="">— 自动从案例库智能匹配 Top3 —</option>
                   {refs.filter(r=>r.type===form.violationType).map(r => <option key={r.id} value={r.id}>{r.autoSaved?'✓ ':''}{r.title}</option>)}
                   {refs.filter(r=>r.type!==form.violationType).length>0&&<optgroup label="— 其他类型 —">{refs.filter(r=>r.type!==form.violationType).map(r=><option key={r.id} value={r.id}>[{r.type}] {r.title}</option>)}</optgroup>}
                 </select>
-                {selRefId && <div className="text-[10px] text-emerald-400 flex items-center gap-1"><CheckCircle size={10}/> 将参考此案例前 3000 字的论证结构</div>}
+                {selRefId
+                  ? <div className="text-[10px] text-emerald-400 flex items-center gap-1"><CheckCircle size={10}/> 手动指定：将参考此案例前 3000 字的论证结构</div>
+                  : refs.length > 0
+                    ? (() => {
+                        const top = findTopReferences(refs, form.violationType || 'Performance', form.suspensionEmail || '', 3);
+                        return top.length > 0
+                          ? <div className="text-[10px] text-purple-400 space-y-0.5">
+                              <div className="flex items-center gap-1"><CheckCircle size={10}/> 将自动匹配以下 {top.length} 个最相关案例注入生成：</div>
+                              {top.map((r,i) => <div key={r.id} className="pl-3 text-slate-500">#{i+1} {r.title.substring(0,40)}</div>)}
+                            </div>
+                          : <div className="text-[10px] text-slate-600">案例库暂无此类型案例，将无参考</div>;
+                      })()
+                    : <div className="text-[10px] text-slate-600">案例库为空，请先在「成功案例库」页上传</div>
+                }
               </div>
 
               {/* Generate Buttons */}

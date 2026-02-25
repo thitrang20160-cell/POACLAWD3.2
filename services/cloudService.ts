@@ -1,6 +1,6 @@
 import { GlobalSettings, ReferenceCase, CaseData, User } from '../types';
 
-// ── 通用请求封装 ──────────────────────────────────────────────────────
+// ── 通用请求封装 ──────────────────────────────────────────────────────────
 const sbFetch = async (
   settings: GlobalSettings,
   path: string,
@@ -21,6 +21,10 @@ const sbFetch = async (
 
 const isConfigured = (s: GlobalSettings) => !!(s.supabaseUrl && s.supabaseKey);
 
+// ── 表名（references 是 PostgreSQL 保留字，必须加引号后 URL 编码）──────
+// Supabase REST API 路径中用 %22references%22 代替 "references"
+const REF_TABLE = '%22references%22';
+
 // ══════════════════════════════════════════════════════════════════════
 // 成功案例库
 // ══════════════════════════════════════════════════════════════════════
@@ -29,7 +33,7 @@ export const CloudService = {
   async getAllReferences(settings: GlobalSettings): Promise<{ data: ReferenceCase[] | null; error: any }> {
     if (!isConfigured(settings)) return { data: null, error: 'Missing config' };
     try {
-      const r = await sbFetch(settings, 'references?select=*&order=created_at.desc');
+      const r = await sbFetch(settings, `${REF_TABLE}?select=*&order=created_at.desc`);
       if (!r.ok) {
         if (r.status === 404) return { data: [], error: null };
         return { data: null, error: `Supabase ${r.status}: ${await r.text()}` };
@@ -41,7 +45,7 @@ export const CloudService = {
   async upsertReference(settings: GlobalSettings, ref: ReferenceCase): Promise<{ success: boolean; error: any }> {
     if (!isConfigured(settings)) return { success: false, error: 'Missing config' };
     try {
-      const r = await sbFetch(settings, 'references', { method: 'POST', body: JSON.stringify(ref) });
+      const r = await sbFetch(settings, REF_TABLE, { method: 'POST', body: JSON.stringify(ref) });
       return r.ok ? { success: true, error: null } : { success: false, error: await r.text() };
     } catch (e: any) { return { success: false, error: e.message }; }
   },
@@ -49,13 +53,13 @@ export const CloudService = {
   async deleteReference(settings: GlobalSettings, id: string): Promise<{ success: boolean; error: any }> {
     if (!isConfigured(settings)) return { success: false, error: 'Missing config' };
     try {
-      const r = await sbFetch(settings, `references?id=eq.${id}`, { method: 'DELETE' });
+      const r = await sbFetch(settings, `${REF_TABLE}?id=eq.${id}`, { method: 'DELETE' });
       return r.ok ? { success: true, error: null } : { success: false, error: await r.text() };
     } catch (e: any) { return { success: false, error: e.message }; }
   },
 
   // ══════════════════════════════════════════════════════════════════
-  // 案件历史（新增）
+  // 案件历史
   // ══════════════════════════════════════════════════════════════════
 
   async getAllCases(settings: GlobalSettings): Promise<{ data: CaseData[] | null; error: any }> {
@@ -87,7 +91,7 @@ export const CloudService = {
   },
 
   // ══════════════════════════════════════════════════════════════════
-  // 用户账号（新增）
+  // 用户账号
   // ══════════════════════════════════════════════════════════════════
 
   async getAllUsers(settings: GlobalSettings): Promise<{ data: User[] | null; error: any }> {

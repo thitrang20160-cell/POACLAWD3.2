@@ -32,7 +32,62 @@ const callAI = (settings: GlobalSettings, sys: string, user: string): Promise<st
 };
 
 // ── 工具函数 ──────────────────────────────────────────────────────────
-const buildBaseContext = (data: Partial<CaseData>, risk: RiskAnalysis, fileEvidence: string, similarCase?: ReferenceCase) => `
+
+/**
+ * 从案例库中智能检索最相关的Top-N案例
+ * 算法：同类型优先 + 关键词重叠度排序
+ */
+export const findTopReferences = (
+  refs: ReferenceCase[],
+  violationType: string,
+  suspensionEmail: string,
+  topN = 3
+): ReferenceCase[] => {
+  if (!refs.length) return [];
+
+  const tokenize = (s: string) =>
+    new Set((s || '').toLowerCase().split(/\W+/).filter(w => w.length > 3));
+
+  const emailTokens = tokenize(suspensionEmail);
+
+  const scored = refs.map(r => {
+    const typeMatch = r.type === violationType ? 0.4 : 0;
+    const contentTokens = tokenize(r.content);
+    const overlap = [...emailTokens].filter(t => contentTokens.has(t)).length;
+    const jaccard = emailTokens.size + contentTokens.size > 0
+      ? overlap / (emailTokens.size + contentTokens.size - overlap)
+      : 0;
+    return { ref: r, score: typeMatch + jaccard };
+  });
+
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topN)
+    .map(x => x.ref);
+};
+
+/**
+ * 把多个参考案例组合成一段精华摘要注入 prompt
+ * 每个案例取前1000字，总共不超过4000字
+ */
+const buildRefDigest = (refs: ReferenceCase[]): string => {
+  if (!refs.length) return '';
+  const snippets = refs.map((r, i) =>
+    `--- Reference ${i + 1}: "${r.title}" [${r.type}] ---\n${r.content.substring(0, 1200).trim()}`
+  );
+  return `**REFERENCE CASES** (${refs.length} successful appeals — learn their argument structure, tone, and evidence patterns):
+${snippets.join('\n\n')}
+
+Key patterns to replicate: specific timelines, named corrective actions, quantified metrics, supplier/carrier accountability.`;
+};
+
+const buildBaseContext = (
+  data: Partial<CaseData>,
+  risk: RiskAnalysis,
+  fileEvidence: string,
+  similarCase?: ReferenceCase,       // 兼容旧调用（单案例手选）
+  topRefs?: ReferenceCase[]          // 新：多案例智能检索结果
+) => `
 **CASE METADATA**:
 - Store: ${data.storeName || '[Store Name]'} | Company: ${data.companyName || '[Company Name]'}
 - Case ID: ${data.caseId || 'N/A'} | Violation: ${data.violationType} | Supply Chain: ${data.supplyChain}
@@ -51,8 +106,7 @@ ${fileEvidence || 'No file. Use placeholder order IDs like [Order #7739284651823
 ${data.suspensionEmail || '[No notice provided]'}
 """
 
-${similarCase ? `**REFERENCE CASE** (successful appeal — adapt its argument structure):
-${similarCase.content.substring(0, 3000)}` : ''}
+${topRefs?.length ? buildRefDigest(topRefs) : similarCase ? `**REFERENCE CASE** (successful appeal — adapt its argument structure):\n${similarCase.content.substring(0, 3000)}` : ''}
 `;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -63,7 +117,8 @@ export const generatePOAOutline = async (
   settings: GlobalSettings,
   risk: RiskAnalysis,
   fileEvidence: string,
-  similarCase?: ReferenceCase
+  similarCase?: ReferenceCase,
+  topRefs?: ReferenceCase[]
 ): Promise<POAOutline> => {
   const isODR = data.isODRSuspension === true;
 
@@ -96,7 +151,7 @@ ${isODR
 
 Make key points SPECIFIC and DATA-DRIVEN based on the case context provided. NOT generic.`;
 
-  const user = buildBaseContext(data, risk, fileEvidence, similarCase);
+  const user = buildBaseContext(data, risk, fileEvidence, similarCase, topRefs);
 
   const raw = await callAI(settings, sys, user);
   // Strip possible markdown fences
@@ -135,7 +190,8 @@ export const expandOutlineToPOA = async (
   settings: GlobalSettings,
   risk: RiskAnalysis,
   fileEvidence: string,
-  similarCase?: ReferenceCase
+  similarCase?: ReferenceCase,
+  topRefs?: ReferenceCase[]
 ): Promise<string> => {
   const isODR = data.isODRSuspension === true;
 
@@ -170,7 +226,7 @@ ${isODR
 **TONE**: ${risk.toneInstruction}
 Return ONLY the complete POA text. No preamble, no meta-comments.`;
 
-  const user = buildBaseContext(data, risk, fileEvidence, similarCase) +
+  const user = buildBaseContext(data, risk, fileEvidence, similarCase, topRefs) +
     `\n\n**CONFIRMED OUTLINE TO EXPAND**:\n${outlineText}`;
 
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
@@ -325,40 +381,84 @@ ${caseData.cnExplanation?.substring(0, 2000) || '未提供'}
 };
 
 // ═══════════════════════════════════════════════════════════════════════
-// 7. 策略自动迭代（新增）
+// 7. 策略自动迭代（升级版：同时利用案件历史 + 成功案例库）
 // ═══════════════════════════════════════════════════════════════════════
 export const iterateStrategies = async (
   successCases: CaseData[],
   currentStrategies: { performance: string; ip: string; general: string },
-  settings: GlobalSettings
+  settings: GlobalSettings,
+  refLibrary?: ReferenceCase[]   // 新增：成功案例库（300个文件）
 ): Promise<{ performance: string; ip: string; general: string }> => {
-  const performanceCases = successCases.filter(c => c.violationType === 'Performance' || c.isODRSuspension);
-  const ipCases = successCases.filter(c => c.violationType === 'IP' || c.violationType === 'Counterfeit');
 
-  const buildSample = (cases: CaseData[], max = 3) =>
+  // ── 从案件历史中按类型分组 ───────────────────────────────────────
+  const perfCases  = successCases.filter(c => c.violationType === 'Performance' || c.isODRSuspension);
+  const ipCases    = successCases.filter(c => c.violationType === 'IP' || c.violationType === 'Counterfeit');
+  const otherCases = successCases.filter(c => c.violationType === 'Related' || c.violationType === 'Other');
+
+  // 从案件历史抽样（最多5条，取最新的）
+  const sampleCases = (cases: CaseData[], max = 5) =>
     cases.slice(0, max).map((c, i) =>
-      `案例${i + 1}（${c.violationType}）:\n${c.poaContent?.substring(0, 800) || '内容缺失'}`
-    ).join('\n\n---\n\n');
+      `案例${i + 1}（${c.violationType}）：\n${c.poaContent?.substring(0, 600) || '内容缺失'}`
+    ).join('\n---\n');
 
-  const sys = '你是 Walmart 申诉策略专家。通过分析成功案例，提炼高效的申诉策略模板。只输出 JSON，不输出任何其他内容。';
-  const user = `以下是历史成功申诉案例（共 ${successCases.length} 个）。
-请分析这些成功案例的共同特征，更新以下三个策略描述。
+  // ── 从案例库（300个文件）中提取关键策略模式 ─────────────────────
+  const buildLibDigest = (type: string, lib: ReferenceCase[], max = 8) => {
+    const filtered = lib.filter(r => r.type === type).slice(0, max);
+    if (!filtered.length) return '（暂无此类型案例库数据）';
+    // 每个只取开头400字，提炼论点结构而非全文
+    return filtered.map((r, i) =>
+      `库案例${i + 1}「${r.title.substring(0, 30)}」：\n${r.content.substring(0, 400)}`
+    ).join('\n---\n');
+  };
 
-**Performance/ODR 成功案例样本**:
-${buildSample(performanceCases) || '暂无此类成功案例，保持现有策略'}
+  const lib = refLibrary || [];
+  const libTotal = lib.length;
 
-**IP/Counterfeit 成功案例样本**:
-${buildSample(ipCases) || '暂无此类成功案例，保持现有策略'}
+  const sys = `你是 Walmart 申诉策略首席专家。你将分析来自两个来源的数据：
+1. 本系统历史成功案件（含完整POA内容）
+2. 成功案例库（共 ${libTotal} 个导入的成功申诉文件）
+请综合两个来源，提炼出最有效的申诉策略模板。只输出 JSON，不输出任何其他内容。`;
 
-**其他类型成功案例**:
-${buildSample(successCases.filter(c => c.violationType === 'Related' || c.violationType === 'Other'))}
+  const user = `
+## 数据来源一：系统内历史成功案件（共 ${successCases.length} 个）
 
-**当前策略（供参考）**:
+**Performance / ODR 类（${perfCases.length} 个）**：
+${sampleCases(perfCases) || '暂无'}
+
+**IP / Counterfeit 类（${ipCases.length} 个）**：
+${sampleCases(ipCases) || '暂无'}
+
+**其他类型（${otherCases.length} 个）**：
+${sampleCases(otherCases) || '暂无'}
+
+---
+
+## 数据来源二：成功案例库（共 ${libTotal} 个导入文件）
+
+**Performance / ODR 类案例库样本**：
+${buildLibDigest('Performance', lib)}
+
+**IP / Counterfeit 类案例库样本**：
+${buildLibDigest('IP', lib)}
+${buildLibDigest('Counterfeit', lib)}
+
+---
+
+## 任务
+
+综合以上 ${successCases.length + libTotal} 份数据，分析这些成功申诉的共同特征：
+- 用词和语气模式
+- 根本原因分析的深度和层次
+- 整改措施的具体程度（时间线、责任人、工具名称）
+- 预防措施的可量化程度
+- 开头和结尾的有效策略
+
+**当前策略（供参考，请在此基础上优化）**：
 Performance: ${currentStrategies.performance}
 IP: ${currentStrategies.ip}
 General: ${currentStrategies.general}
 
-请输出一个 JSON 对象，键为 "performance"、"ip"、"general"，值为优化后的中文策略描述（每条 100-200 字）。
+请输出一个 JSON 对象，键为 "performance"、"ip"、"general"，值为优化后的中文策略描述（每条150-250字，要具体可操作）。
 只输出 JSON，不要任何注释或 markdown 代码块。`;
 
   try {
