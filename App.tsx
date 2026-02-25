@@ -6,7 +6,7 @@ import {
   UserPlus, KeyRound, Gavel, Send, Cloud, CloudLightning, Wifi, WifiOff,
   Crown, FileDown, Eye, EyeOff, TrendingUp, Clock, CheckSquare,
   XSquare, MessageSquare, BookMarked, Zap, Store, Server,
-  ThumbsUp, ThumbsDown, ScanSearch
+  ThumbsUp, ThumbsDown, ScanSearch, Languages, AlertCircle
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend } from 'recharts';
 
@@ -22,6 +22,7 @@ import {
 import {
   generatePOAOutline, expandOutlineToPOA, generateCNExplanation,
   autoFixPOA, analyzeFailedCase, iterateStrategies, findTopReferences,
+  translatePOAToChinese, translateOutlineToChinese,
 } from './services/geminiService';
 import { CloudService } from './services/cloudService';
 import { parseFile } from './services/fileService';
@@ -145,8 +146,12 @@ export default function App() {
   const [isGenOutline, setIsGenOutline] = useState(false);
   const [isExpanding, setIsExpanding] = useState(false);
   const [isFixing, setIsFixing] = useState(false);
+  const [isTranslatingOutline, setIsTranslatingOutline] = useState(false);
+  const [isTranslatingPOA, setIsTranslatingPOA] = useState(false);
   const [poa, setPoa] = useState('');
   const [cn, setCn] = useState('');
+  const [poaCN, setPoaCN] = useState('');           // 翻译后的中文 POA
+  const [showCNPoa, setShowCNPoa] = useState(false); // 切换显示英/中
 
   // Auto-save after success modal
   const [autoSaveCand, setAutoSaveCand] = useState<CaseData | null>(null);
@@ -178,9 +183,14 @@ export default function App() {
     setStoreProfiles(loadStoreProfiles());
     if (s.supabaseUrl && s.supabaseKey) handleCloudSync(s);
     const all = loadCases();
-    const adm = user.role === 'admin' || user.role === 'super_admin';
-    setCases(adm ? all : all.filter(c => c.userId === user.id));
-    if (adm) setUserList(getAllUsers());
+    if (user.role === 'super_admin') {
+      setCases(all);  // 超管看全部
+    } else if (user.role === 'admin') {
+      setCases(all);  // admin 本地也看全部（云端同步后再过滤）
+    } else {
+      setCases(all.filter(c => c.userId === user.id));
+    }
+    if (user.role === 'admin' || user.role === 'super_admin') setUserList(getAllUsers());
     if (user.companyName) setForm(p => ({ ...p, companyName: user.companyName }));
   }, [user]);
 
@@ -208,15 +218,22 @@ export default function App() {
       const { data: caseData, error: caseErr } = await CloudService.getAllCases(cfg);
       if (caseData) {
         saveCases(caseData);
-        const adm = user?.role === 'admin' || user?.role === 'super_admin';
-        setCases(adm ? caseData : caseData.filter(c => c.userId === user?.id));
+        if (user?.role === 'super_admin') {
+          // 超管看全部案件
+          setCases(caseData);
+        } else if (user?.role === 'admin') {
+          // 管理员看自己 + 所有 client 案件
+          setCases(caseData.filter(c => c.userId === user.id || !userList.find(u => u.id === c.userId && (u.role === 'admin' || u.role === 'super_admin'))));
+        } else {
+          // 普通员工只看自己的
+          setCases(caseData.filter(c => c.userId === user?.id));
+        }
       } else if (caseErr) console.error('Sync cases:', caseErr);
 
-      // 同步用户列表（仅管理员）
+      // 同步用户列表（管理员以上）
       if (user?.role === 'admin' || user?.role === 'super_admin') {
         const { data: userData, error: userErr } = await CloudService.getAllUsers(cfg);
         if (userData?.length) {
-          // 合并云端用户到本地（云端优先，但保留本地独有账号）
           userData.forEach(u => updateUser(u));
           setUserList(getAllUsers());
         } else if (userErr) console.error('Sync users:', userErr);
@@ -371,11 +388,37 @@ export default function App() {
     finally { setIsFixing(false); }
   };
 
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(strip(poa)); setCopyOk(true); setTimeout(() => setCopyOk(false), 2000);
+  const handleTranslateOutline = async () => {
+    if (!editOutline) return;
+    setIsTranslatingOutline(true);
+    try {
+      const translated = await translateOutlineToChinese(editOutline, settings);
+      setEditOutline(translated);
+    } catch (e: any) { alert('大纲翻译失败: ' + e.message); }
+    finally { setIsTranslatingOutline(false); }
   };
 
-  const handleResetGen = () => { setGenPhase('idle'); setEditOutline(null); setPoa(''); setCn(''); setRisk(null); };
+  const handleTranslatePOA = async () => {
+    if (!poa) return;
+    if (poaCN && showCNPoa) { setShowCNPoa(false); return; } // 已有翻译，切回英文
+    if (poaCN) { setShowCNPoa(true); return; }               // 已有翻译，切到中文
+    setIsTranslatingPOA(true);
+    try {
+      const translated = await translatePOAToChinese(poa, settings);
+      setPoaCN(translated); setShowCNPoa(true);
+    } catch (e: any) { alert('POA 翻译失败: ' + e.message); }
+    finally { setIsTranslatingPOA(false); }
+  };
+
+  const handleCopy = async () => {
+    const txt = showCNPoa && poaCN ? poaCN : poa;
+    await navigator.clipboard.writeText(strip(txt)); setCopyOk(true); setTimeout(() => setCopyOk(false), 2000);
+  };
+
+  const handleResetGen = () => {
+    setGenPhase('idle'); setEditOutline(null); setPoa(''); setCn('');
+    setPoaCN(''); setShowCNPoa(false); setRisk(null);
+  };
 
   const saveCase = async () => {
     if (!poa || !user) return;
@@ -980,19 +1023,52 @@ export default function App() {
               {/* Outline Editor */}
               {genPhase === 'outline' && editOutline && (
                 <div className="flex-1 bg-slate-900/60 border border-blue-500/30 rounded-2xl overflow-hidden flex flex-col">
-                  <div className="bg-slate-950 border-b border-slate-800 p-3 flex items-center gap-2 flex-shrink-0">
-                    <div className="bg-blue-500/20 p-1.5 rounded-lg"><BrainCircuit size={15} className="text-blue-400"/></div>
-                    <div>
-                      <span className="text-xs font-bold text-slate-300">大纲预览 · 可直接编辑各节点</span>
-                      <div className="text-[10px] text-slate-600 mt-0.5">策略: {editOutline.overallStrategy}</div>
+                  <div className="bg-slate-950 border-b border-slate-800 p-3 flex items-center justify-between flex-shrink-0">
+                    <div className="flex items-center gap-2">
+                      <div className="bg-blue-500/20 p-1.5 rounded-lg"><BrainCircuit size={15} className="text-blue-400"/></div>
+                      <div>
+                        <span className="text-xs font-bold text-slate-300">大纲预览 · 可直接编辑各节点</span>
+                        <div className="text-[10px] text-slate-600 mt-0.5">策略: {editOutline.overallStrategy}</div>
+                      </div>
                     </div>
+                    <button
+                      onClick={handleTranslateOutline}
+                      disabled={isTranslatingOutline}
+                      className="flex items-center gap-1.5 bg-indigo-600/80 hover:bg-indigo-500 disabled:opacity-50 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors"
+                    >
+                      {isTranslatingOutline ? <Loader2 size={12} className="animate-spin"/> : <Languages size={12}/>}
+                      {isTranslatingOutline ? '翻译中...' : '一键中文'}
+                    </button>
                   </div>
+
+                  {/* 管理员全局指示栏 */}
+                  {isAdmin && (
+                    <div className="flex-shrink-0 px-4 pt-3 pb-1">
+                      <div className="bg-amber-500/8 border border-amber-500/20 rounded-xl p-3">
+                        <div className="text-[10px] font-bold text-amber-400 mb-1.5 flex items-center gap-1">
+                          <AlertCircle size={11}/> 管理员全局指示（最高优先级，AI 必须遵守）
+                        </div>
+                        <textarea
+                          rows={2}
+                          className="w-full bg-slate-950/60 border border-amber-500/20 rounded-lg px-2.5 py-1.5 text-xs text-amber-200 outline-none resize-none focus:border-amber-400/40 transition-colors leading-relaxed placeholder-slate-700"
+                          placeholder="例：必须提及已更换供应商并附上新合同日期；强调这是首次违规；重点突出配送准时率已提升至98%..."
+                          value={editOutline.adminDirective || ''}
+                          onChange={e => setEditOutline({ ...editOutline, adminDirective: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex-1 overflow-y-auto p-4 space-y-3">
                     {editOutline.sections.map((sec, si) => (
                       <div key={sec.id} className="bg-slate-950 border border-slate-800 rounded-xl p-4">
                         <div className="flex items-center gap-2 mb-2">
                           <span className="text-[10px] font-bold text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">{si+1}</span>
-                          <input className="flex-1 bg-transparent text-slate-200 text-sm font-bold outline-none focus:text-blue-300 transition-colors" value={sec.title} onChange={e => { const ns = {...editOutline, sections: editOutline.sections.map((s,i)=>i===si?{...s,title:e.target.value}:s)}; setEditOutline(ns); }}/>
+                          <input
+                            className="flex-1 bg-transparent text-slate-200 text-sm font-bold outline-none focus:text-blue-300 transition-colors"
+                            value={sec.title}
+                            onChange={e => { const ns = {...editOutline, sections: editOutline.sections.map((s,i)=>i===si?{...s,title:e.target.value}:s)}; setEditOutline(ns); }}
+                          />
                         </div>
                         <div className="space-y-1.5">
                           {sec.keyPoints.map((kp, ki) => (
@@ -1004,6 +1080,17 @@ export default function App() {
                           ))}
                           <button onClick={() => { const ns = {...editOutline, sections: editOutline.sections.map((s,i)=>i===si?{...s,keyPoints:[...s.keyPoints,'']}:s)}; setEditOutline(ns); }} className="text-[10px] text-slate-600 hover:text-blue-400 flex items-center gap-1 transition-colors"><Plus size={11}/> 添加要点</button>
                         </div>
+                        {/* 每节管理员备注 */}
+                        {isAdmin && (
+                          <div className="mt-2.5 pt-2.5 border-t border-slate-800/60">
+                            <input
+                              className="w-full bg-slate-900/40 border border-slate-800/50 rounded-lg px-2.5 py-1.5 text-[11px] text-amber-300/80 outline-none focus:border-amber-500/30 transition-colors placeholder-slate-700"
+                              placeholder="本节管理员备注（AI 必须体现在这一节中）..."
+                              value={sec.adminNote || ''}
+                              onChange={e => { const ns = {...editOutline, sections: editOutline.sections.map((s,i)=>i===si?{...s,adminNote:e.target.value}:s)}; setEditOutline(ns); }}
+                            />
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1016,19 +1103,29 @@ export default function App() {
                   <div className="bg-slate-950 border-b border-slate-800 p-3 flex justify-between items-center flex-shrink-0">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-slate-400 bg-slate-800 px-2.5 py-1 rounded-md">POA 完整内容</span>
+                      {showCNPoa && <span className="text-[10px] font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">中文版</span>}
                       {form.isODRSuspension && <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">ODR 限字</span>}
-                      {poa && <span className="text-[10px] text-slate-600">{poa.length} 字符</span>}
+                      {poa && <span className="text-[10px] text-slate-600">{(showCNPoa && poaCN ? poaCN : poa).length} 字符</span>}
                     </div>
                     {poa && (
                       <div className="flex items-center gap-1.5">
-                        <button onClick={() => dlTxt(poa, form.storeName||'')} className="text-[11px] text-slate-400 hover:text-slate-200 px-2 py-1.5 rounded hover:bg-slate-800 transition-colors flex items-center gap-1"><FileDown size={13}/> TXT</button>
+                        <button
+                          onClick={handleTranslatePOA}
+                          disabled={isTranslatingPOA}
+                          className={`text-[11px] px-2 py-1.5 rounded transition-colors flex items-center gap-1 ${showCNPoa ? 'text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}
+                        >
+                          {isTranslatingPOA ? <Loader2 size={13} className="animate-spin"/> : <Languages size={13}/>}
+                          {isTranslatingPOA ? '翻译中...' : showCNPoa ? '查看英文' : '中文翻译'}
+                        </button>
+                        <button onClick={() => dlTxt(showCNPoa && poaCN ? poaCN : poa, form.storeName||'')} className="text-[11px] text-slate-400 hover:text-slate-200 px-2 py-1.5 rounded hover:bg-slate-800 transition-colors flex items-center gap-1"><FileDown size={13}/> TXT</button>
                         <button onClick={handleCopy} className={`text-[11px] px-2 py-1.5 rounded transition-colors flex items-center gap-1 ${copyOk?'text-emerald-400 bg-emerald-500/10':'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>{copyOk?<><CheckCircle size={13}/> 已复制</>:<><Copy size={13}/> 复制</>}</button>
                         <button onClick={saveCase} className="text-[11px] text-slate-400 hover:text-slate-200 px-2 py-1.5 rounded hover:bg-slate-800 transition-colors flex items-center gap-1"><Save size={13}/> 保存</button>
                       </div>
                     )}
                   </div>
                   <div className="flex-1 p-5 overflow-auto">
-                    {poa ? <pre className="font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">{poa}</pre>
+                    {poa
+                      ? <pre className="font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">{showCNPoa && poaCN ? poaCN : poa}</pre>
                       : <div className="h-full flex flex-col items-center justify-center text-slate-700"><BrainCircuit size={36} className="mb-3 opacity-30"/><span className="text-sm">填写左侧信息，点击"第一步：生成大纲"</span></div>}
                   </div>
                 </div>

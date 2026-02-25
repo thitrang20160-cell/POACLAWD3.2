@@ -40,12 +40,14 @@ export interface POAOutlineSection {
   id: string;
   title: string;
   keyPoints: string[];
+  adminNote?: string;   // 管理员对本节的特别指示
 }
 
 export interface POAOutline {
   overallStrategy: string;
   riskSummary: string;
   sections: POAOutlineSection[];
+  adminDirective?: string;  // 管理员全局特别要求（最高优先级）
 }
 
 export interface CaseData {

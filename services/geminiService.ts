@@ -196,8 +196,18 @@ export const expandOutlineToPOA = async (
   const isODR = data.isODRSuspension === true;
 
   const outlineText = outline.sections.map((s, i) =>
-    `${i + 1}. ${s.title}\n${s.keyPoints.map(p => `   - ${p}`).join('\n')}`
+    `${i + 1}. ${s.title}\n${s.keyPoints.map(p => `   - ${p}`).join('\n')}` +
+    (s.adminNote ? `\n   ⚑ ADMIN INSTRUCTION FOR THIS SECTION: "${s.adminNote}"` : '')
   ).join('\n\n');
+
+  // 管理员全局指示——最高优先级块
+  const adminDirectiveBlock = outline.adminDirective?.trim()
+    ? `\n\n🔴 MANDATORY OPERATOR DIRECTIVE (HIGHEST PRIORITY — MUST be implemented before all other rules):
+"""
+${outline.adminDirective}
+"""
+This directive OVERRIDES any generic expansion rule below. Failure to implement it is unacceptable.`
+    : '';
 
   const sys = `You are a Senior Walmart Appeal Attorney.
 The operator has APPROVED the following strategic outline. Your job is to expand it into a complete, professional POA.
@@ -205,6 +215,11 @@ The operator has APPROVED the following strategic outline. Your job is to expand
 **APPROVED OUTLINE** (follow this EXACTLY — do not add or remove sections):
 Overall Strategy: ${outline.overallStrategy}
 ${outlineText}
+${adminDirectiveBlock}
+
+**CRITICAL RULES FOR ADMIN INSTRUCTIONS**:
+- Any section with a "⚑ ADMIN INSTRUCTION" marker: that instruction MUST be implemented in that section's content — include the specified facts, examples, or arguments explicitly.
+- The MANDATORY OPERATOR DIRECTIVE above (if present) MUST be addressed somewhere in the POA, even if it means adding a sentence to an otherwise complete section.
 
 **EXPANSION RULES**:
 ${isODR
@@ -227,7 +242,11 @@ ${isODR
 Return ONLY the complete POA text. No preamble, no meta-comments.`;
 
   const user = buildBaseContext(data, risk, fileEvidence, similarCase, topRefs) +
-    `\n\n**CONFIRMED OUTLINE TO EXPAND**:\n${outlineText}`;
+    `\n\n**CONFIRMED OUTLINE TO EXPAND**:\n${outlineText}` +
+    (outline.adminDirective ? `\n\n**OPERATOR DIRECTIVE**: ${outline.adminDirective}` : '');
+
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  let result = (await callAI(settings, sys + `\n\nToday's date: ${today}`, user)).trim();
 
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   let result = (await callAI(settings, sys + `\n\nToday's date: ${today}`, user)).trim();
@@ -472,5 +491,44 @@ General: ${currentStrategies.general}
     };
   } catch {
     throw new Error('策略解析失败，请重试');
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// 8. 一键翻译 POA 全文为中文
+// ═══════════════════════════════════════════════════════════════════════
+export const translatePOAToChinese = async (
+  poaText: string,
+  settings: GlobalSettings
+): Promise<string> => {
+  const sys = `你是专业的跨境电商申诉翻译专家，擅长将 Walmart POA 英文申诉翻译成流畅的中文。
+翻译要求：
+- 保留原文的所有章节结构和格式（如 **I. Opening Statement** 翻译为 **一、开头陈述**）
+- 保留所有订单号、日期、人名、工具名等专有名词（不翻译 Order ID、ShipStation 等）
+- 语言流畅自然，符合中文表达习惯
+- 不增减任何实质内容
+只输出翻译后的完整中文文本，不要任何说明。`;
+
+  return callAI(settings, sys, `请将以下 Walmart POA 翻译成中文：\n\n${poaText}`);
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// 9. 一键翻译大纲为中文
+// ═══════════════════════════════════════════════════════════════════════
+export const translateOutlineToChinese = async (
+  outline: POAOutline,
+  settings: GlobalSettings
+): Promise<POAOutline> => {
+  const sys = `你是专业翻译，将 Walmart POA 大纲从英文翻译成中文。
+只输出 JSON，格式与输入完全一致，仅将文本内容翻译为中文。
+保留所有订单号、人名（Mr. Chen Wei 等）、工具名（ShipStation 等）不翻译。
+不要任何注释或 markdown 代码块。`;
+
+  const raw = await callAI(settings, sys, `翻译以下 JSON 大纲的所有文本字段为中文：\n${JSON.stringify(outline, null, 2)}`);
+  const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  try {
+    return { ...outline, ...JSON.parse(clean) };
+  } catch {
+    throw new Error('大纲翻译解析失败，请重试');
   }
 };
