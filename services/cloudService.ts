@@ -21,9 +21,8 @@ const sbFetch = async (
 
 const isConfigured = (s: GlobalSettings) => !!(s.supabaseUrl && s.supabaseKey);
 
-// ── 表名（references 是 PostgreSQL 保留字，必须加引号后 URL 编码）──────
-// Supabase REST API 路径中用 %22references%22 代替 "references"
-const REF_TABLE = '%22references%22';
+// Supabase PostgREST 内部会自动处理 references 保留字，直接用原名即可
+const REF_TABLE = 'references';
 
 // ══════════════════════════════════════════════════════════════════════
 // 成功案例库
