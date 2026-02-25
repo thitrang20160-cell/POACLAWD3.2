@@ -193,11 +193,47 @@ export default function App() {
 
   // ── Cloud ──────────────────────────────────────────────────────────────
   const handleCloudSync = async (cfg: GlobalSettings) => {
-    if (!cfg.supabaseUrl) return; setIsSyncing(true);
+    if (!cfg.supabaseUrl) return;
+    setIsSyncing(true);
     try {
-      const { data, error } = await CloudService.getAllReferences(cfg);
-      if (data?.length) { setRefs(data); saveReferences(data); }
-      else if (error) console.error('Sync:', error);
+      // 同步案例库
+      const { data: refData, error: refErr } = await CloudService.getAllReferences(cfg);
+      if (refData?.length) { setRefs(refData); saveReferences(refData); }
+      else if (refErr) console.error('Sync refs:', refErr);
+
+      // 同步案件历史
+      const { data: caseData, error: caseErr } = await CloudService.getAllCases(cfg);
+      if (caseData) {
+        saveCases(caseData);
+        const adm = user?.role === 'admin' || user?.role === 'super_admin';
+        setCases(adm ? caseData : caseData.filter(c => c.userId === user?.id));
+      } else if (caseErr) console.error('Sync cases:', caseErr);
+
+      // 同步用户列表（仅管理员）
+      if (user?.role === 'admin' || user?.role === 'super_admin') {
+        const { data: userData, error: userErr } = await CloudService.getAllUsers(cfg);
+        if (userData?.length) {
+          // 合并云端用户到本地（云端优先，但保留本地独有账号）
+          userData.forEach(u => updateUser(u));
+          setUserList(getAllUsers());
+        } else if (userErr) console.error('Sync users:', userErr);
+      }
+    } finally { setIsSyncing(false); }
+  };
+
+  // ── 首次迁移：把本地数据全量推送到云端 ─────────────────────────────
+  const handlePushToCloud = async () => {
+    if (!settings.supabaseUrl) return alert('请先配置 Supabase');
+    if (!window.confirm('将把本地所有案件、案例库、账号全量推送到云端，确认？')) return;
+    setIsSyncing(true);
+    try {
+      const result = await CloudService.pushAllLocalData(
+        settings,
+        loadReferences(),
+        loadCases(),
+        getAllUsers()
+      );
+      alert(result.message);
     } finally { setIsSyncing(false); }
   };
 
@@ -215,31 +251,41 @@ export default function App() {
   };
 
   // ── User Management ───────────────────────────────────────────────────
-  const createUser = (e: React.FormEvent) => {
+  const createUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    try { registerUser(newUserForm.username, newUserForm.password, newUserForm.role, newUserForm.companyName); setUserList(getAllUsers()); setIsAddingUser(false); setNewUserForm({ username: '', password: '', role: 'client', companyName: '' }); alert('账号创建成功！'); }
-    catch (err: any) { alert(err.message); }
+    try {
+      const u = registerUser(newUserForm.username, newUserForm.password, newUserForm.role, newUserForm.companyName);
+      setUserList(getAllUsers()); setIsAddingUser(false);
+      setNewUserForm({ username: '', password: '', role: 'client', companyName: '' });
+      if (settings.supabaseUrl) await CloudService.upsertUser(settings, u);
+      alert('账号创建成功！');
+    } catch (err: any) { alert(err.message); }
   };
 
-  const delUser = (id: string) => {
+  const delUser = async (id: string) => {
     if (id === user?.id) return alert('无法删除自己');
     const t = userList.find(u => u.id === id); if (!t) return;
     if (user?.role === 'admin' && t.role !== 'client') return alert('权限不足');
     if (!window.confirm(`确定删除 [${t.username}]？`)) return;
     deleteUser(id); setUserList(getAllUsers());
+    if (settings.supabaseUrl) await CloudService.deleteUser(settings, id);
   };
 
-  const saveEditUser = (id: string) => {
+  const saveEditUser = async (id: string) => {
     const t = userList.find(u => u.id === id); if (!t) return;
     if (user?.role === 'admin' && editUserForm.role !== 'client') return alert('权限不足');
-    updateUser({ ...t, role: editUserForm.role, companyName: editUserForm.companyName });
+    const updated = { ...t, role: editUserForm.role, companyName: editUserForm.companyName };
+    updateUser(updated);
     setUserList(getAllUsers()); setEditingUserId(null);
+    if (settings.supabaseUrl) await CloudService.upsertUser(settings, updated);
   };
 
-  const resetPwd = (u: UserType) => {
+  const resetPwd = async (u: UserType) => {
     if (user?.role === 'admin' && u.role !== 'client') return alert('权限不足');
     const np = prompt(`新密码 (${u.username}):`); if (!np || np.length < 4) return alert('密码至少4位');
-    updateUserPassword(u.id, np); alert('已重置');
+    const updated = updateUserPassword(u.id, np);
+    if (updated && settings.supabaseUrl) await CloudService.upsertUser(settings, updated);
+    alert('已重置');
   };
 
   // ── Stats ──────────────────────────────────────────────────────────────
@@ -325,17 +371,20 @@ export default function App() {
 
   const handleResetGen = () => { setGenPhase('idle'); setEditOutline(null); setPoa(''); setCn(''); setRisk(null); };
 
-  const saveCase = () => {
+  const saveCase = async () => {
     if (!poa || !user) return;
     const nc: CaseData = { id: genId(), userId: user.id, clientName: user.username, createdAt: new Date().toISOString(), ...(form as any), poaContent: poa, cnExplanation: cn, status: 'pending', fileEvidenceSummary: fileName ? `Used: ${fileName}` : undefined, outlineSnapshot: editOutline ? JSON.stringify(editOutline) : undefined };
-    const all = [nc, ...loadCases()]; saveCases(all); setCases([nc, ...cases]); alert('已保存至历史库！');
+    const all = [nc, ...loadCases()]; saveCases(all); setCases([nc, ...cases]);
+    if (settings.supabaseUrl) await CloudService.upsertCase(settings, nc);
+    alert('已保存至历史库！');
   };
 
   // ── Case Status & Auto-Save ───────────────────────────────────────────
   const updateStatus = (id: string, status: CaseData['status']) => {
     const all = loadCases().map(c => c.id === id ? { ...c, status } : c);
     saveCases(all); setCases(cases.map(c => c.id === id ? { ...c, status } : c));
-    // 标记成功时，触发自动入库弹窗
+    const updated = all.find(c => c.id === id);
+    if (updated && settings.supabaseUrl) CloudService.upsertCase(settings, updated);
     if (status === 'success') {
       const c = cases.find(c => c.id === id);
       if (c?.poaContent) {
@@ -357,7 +406,9 @@ export default function App() {
   const saveReview = () => {
     if (!reviewCase) return;
     const all = loadCases().map(c => c.id === reviewCase.id ? reviewCase : c);
-    saveCases(all); setCases(all.filter(c => isAdmin || c.userId === user?.id)); alert('已保存！');
+    saveCases(all); setCases(all.filter(c => isAdmin || c.userId === user?.id));
+    if (settings.supabaseUrl) CloudService.upsertCase(settings, reviewCase);
+    alert('已保存！');
   };
 
   const addNote = () => {
@@ -367,6 +418,7 @@ export default function App() {
     setReviewCase(updated);
     const all = loadCases().map(c => c.id === updated.id ? updated : c);
     saveCases(all); setCases(all.filter(c => isAdmin || c.userId === user?.id));
+    if (settings.supabaseUrl) CloudService.upsertCase(settings, updated);
     setNewNoteText(''); setNoteRequiresAction(false);
   };
 
@@ -376,6 +428,7 @@ export default function App() {
     setReviewCase(updated);
     const all = loadCases().map(c => c.id === updated.id ? updated : c);
     saveCases(all); setCases(all.filter(c => isAdmin || c.userId === user?.id));
+    if (settings.supabaseUrl) CloudService.upsertCase(settings, updated);
   };
 
   const handleSubmitWalmart = async () => {
@@ -386,6 +439,7 @@ export default function App() {
         const uc: CaseData = { ...reviewCase, status: 'submitted', submissionTime: new Date().toISOString(), walmartCaseNumber: r.caseNumber };
         const all = loadCases().map(c => c.id === reviewCase.id ? uc : c);
         saveCases(all); setCases(all.filter(c => isAdmin || c.userId === user?.id));
+        if (settings.supabaseUrl) await CloudService.upsertCase(settings, uc);
         alert(`提交成功！Case: ${r.caseNumber}`); setReviewCase(null);
       } else alert('提交失败: ' + r.message);
     } catch (e: any) { alert('错误: ' + e.message); } finally { setIsSubmitting(false); }
@@ -401,6 +455,7 @@ export default function App() {
       const updated = { ...c, failureAnalysis: analysis };
       const all = loadCases().map(x => x.id === caseId ? updated : x);
       saveCases(all); setCases(all.filter(x => isAdmin || x.userId === user?.id));
+      if (settings.supabaseUrl) await CloudService.upsertCase(settings, updated);
       if (reviewCase?.id === caseId) setReviewCase(updated);
       alert('分析完成，已保存至案件详情。');
     } catch (e: any) { alert('分析失败: ' + e.message); } finally { setAnalysingCaseId(null); }
@@ -1102,12 +1157,28 @@ export default function App() {
               <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 space-y-4">
                 <h3 className="text-base font-bold text-slate-200 flex items-center gap-2"><Cloud size={18} className="text-emerald-500"/> 云端数据库 (Supabase)</h3>
                 <div className={`flex items-center gap-2 p-3 rounded-xl border text-sm font-bold ${settings.supabaseUrl?'bg-emerald-500/8 border-emerald-500/20 text-emerald-400':'bg-slate-950 border-slate-800 text-slate-500'}`}>
-                  {settings.supabaseUrl?<Wifi size={14}/>:<WifiOff size={14}/>} {settings.supabaseUrl?'已连接':'离线模式'}
+                  {settings.supabaseUrl?<Wifi size={14}/>:<WifiOff size={14}/>}
+                  {settings.supabaseUrl ? '已连接 — 数据实时同步到云端' : '未连接 — 数据仅存本地浏览器'}
                 </div>
-                {[{l:'Project URL',k:'supabaseUrl',ph:'https://xyz.supabase.co',t:'text'},{l:'Anon API Key',k:'supabaseKey',ph:'eyJhbGci...',t:'password'}].map(({l,k,ph,t})=>(
+                {[{l:'Project URL',k:'supabaseUrl',ph:'https://xxxxxxxx.supabase.co',t:'text'},{l:'Anon API Key',k:'supabaseKey',ph:'eyJhbGci...',t:'password'}].map(({l,k,ph,t})=>(
                   <div key={k}><label className="text-[11px] font-bold text-slate-500 uppercase mb-1.5 block">{l}</label><input type={t} placeholder={ph} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-300 outline-none focus:border-emerald-500/40 transition-colors text-xs" value={(settings as any)[k]} onChange={e=>{const s={...settings,[k]:e.target.value};setSettings(s);saveSettings(s);}}/></div>
                 ))}
-                {settings.supabaseUrl && <button onClick={()=>handleCloudSync(settings)} className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-colors"><RefreshCw size={12} className={isSyncing?'animate-spin':''}/> 测试并同步</button>}
+                {settings.supabaseUrl && (
+                  <div className="flex gap-3 flex-wrap">
+                    <button onClick={()=>handleCloudSync(settings)} disabled={isSyncing} className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-colors">
+                      <RefreshCw size={12} className={isSyncing?'animate-spin':''}/> {isSyncing ? '同步中...' : '拉取最新数据'}
+                    </button>
+                    <button onClick={handlePushToCloud} disabled={isSyncing} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-colors">
+                      <UploadCloud size={12}/> 首次迁移：推送本地数据到云端
+                    </button>
+                  </div>
+                )}
+                {!settings.supabaseUrl && (
+                  <div className="text-[11px] text-slate-600 leading-relaxed">
+                    配置后，所有员工的案件历史、成功案例库、账号将实时共享。<br/>
+                    首次配置完成后点「首次迁移」把本地数据推上去，之后新数据自动同步。
+                  </div>
+                )}
               </div>
             )}
 

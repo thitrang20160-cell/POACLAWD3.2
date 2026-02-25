@@ -1,92 +1,138 @@
-import { GlobalSettings, ReferenceCase } from '../types';
+import { GlobalSettings, ReferenceCase, CaseData, User } from '../types';
 
+// ── 通用请求封装 ──────────────────────────────────────────────────────
+const sbFetch = async (
+  settings: GlobalSettings,
+  path: string,
+  options: RequestInit = {}
+): Promise<Response> => {
+  const base = settings.supabaseUrl.replace(/\/$/, '');
+  return fetch(`${base}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      'apikey': settings.supabaseKey,
+      'Authorization': `Bearer ${settings.supabaseKey}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates',
+      ...(options.headers || {}),
+    },
+  });
+};
+
+const isConfigured = (s: GlobalSettings) => !!(s.supabaseUrl && s.supabaseKey);
+
+// ══════════════════════════════════════════════════════════════════════
+// 成功案例库
+// ══════════════════════════════════════════════════════════════════════
 export const CloudService = {
+
   async getAllReferences(settings: GlobalSettings): Promise<{ data: ReferenceCase[] | null; error: any }> {
-    if (!settings.supabaseUrl || !settings.supabaseKey) {
-      return { data: null, error: "Missing Supabase configuration" };
-    }
-
+    if (!isConfigured(settings)) return { data: null, error: 'Missing config' };
     try {
-      // Clean URL (remove trailing slash)
-      const baseUrl = settings.supabaseUrl.replace(/\/$/, "");
-      const url = `${baseUrl}/rest/v1/references?select=*`;
-
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'apikey': settings.supabaseKey,
-          'Authorization': `Bearer ${settings.supabaseKey}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (!response.ok) {
-        // If 404, maybe table doesn't exist or permissions issue, return empty to avoid crash
-        if (response.status === 404) return { data: [], error: null };
-        const errText = await response.text();
-        return { data: null, error: `Supabase Error (${response.status}): ${errText}` };
+      const r = await sbFetch(settings, 'references?select=*&order=created_at.desc');
+      if (!r.ok) {
+        if (r.status === 404) return { data: [], error: null };
+        return { data: null, error: `Supabase ${r.status}: ${await r.text()}` };
       }
-
-      const data = await response.json();
-      return { data: data as ReferenceCase[], error: null };
-    } catch (e: any) {
-      return { data: null, error: e.message };
-    }
+      return { data: await r.json(), error: null };
+    } catch (e: any) { return { data: null, error: e.message }; }
   },
 
   async upsertReference(settings: GlobalSettings, ref: ReferenceCase): Promise<{ success: boolean; error: any }> {
-    if (!settings.supabaseUrl || !settings.supabaseKey) return { success: false, error: "Missing Config" };
-
+    if (!isConfigured(settings)) return { success: false, error: 'Missing config' };
     try {
-      const baseUrl = settings.supabaseUrl.replace(/\/$/, "");
-      const url = `${baseUrl}/rest/v1/references`;
-
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'apikey': settings.supabaseKey,
-          'Authorization': `Bearer ${settings.supabaseKey}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'resolution=merge-duplicates'
-        },
-        body: JSON.stringify(ref)
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        return { success: false, error: errText };
-      }
-
-      return { success: true, error: null };
-    } catch (e: any) {
-      return { success: false, error: e.message };
-    }
+      const r = await sbFetch(settings, 'references', { method: 'POST', body: JSON.stringify(ref) });
+      return r.ok ? { success: true, error: null } : { success: false, error: await r.text() };
+    } catch (e: any) { return { success: false, error: e.message }; }
   },
 
   async deleteReference(settings: GlobalSettings, id: string): Promise<{ success: boolean; error: any }> {
-    if (!settings.supabaseUrl || !settings.supabaseKey) return { success: false, error: "Missing Config" };
-
+    if (!isConfigured(settings)) return { success: false, error: 'Missing config' };
     try {
-      const baseUrl = settings.supabaseUrl.replace(/\/$/, "");
-      const url = `${baseUrl}/rest/v1/references?id=eq.${id}`;
+      const r = await sbFetch(settings, `references?id=eq.${id}`, { method: 'DELETE' });
+      return r.ok ? { success: true, error: null } : { success: false, error: await r.text() };
+    } catch (e: any) { return { success: false, error: e.message }; }
+  },
 
-      const response = await fetch(url, {
-        method: 'DELETE',
-        headers: {
-          'apikey': settings.supabaseKey,
-          'Authorization': `Bearer ${settings.supabaseKey}`,
-          'Content-Type': 'application/json'
-        }
-      });
+  // ══════════════════════════════════════════════════════════════════
+  // 案件历史（新增）
+  // ══════════════════════════════════════════════════════════════════
 
-      if (!response.ok) {
-        const errText = await response.text();
-        return { success: false, error: errText };
+  async getAllCases(settings: GlobalSettings): Promise<{ data: CaseData[] | null; error: any }> {
+    if (!isConfigured(settings)) return { data: null, error: 'Missing config' };
+    try {
+      const r = await sbFetch(settings, 'cases?select=*&order=createdAt.desc');
+      if (!r.ok) {
+        if (r.status === 404) return { data: [], error: null };
+        return { data: null, error: `Supabase ${r.status}: ${await r.text()}` };
       }
+      return { data: await r.json(), error: null };
+    } catch (e: any) { return { data: null, error: e.message }; }
+  },
 
-      return { success: true, error: null };
-    } catch (e: any) {
-      return { success: false, error: e.message };
-    }
-  }
+  async upsertCase(settings: GlobalSettings, c: CaseData): Promise<{ success: boolean; error: any }> {
+    if (!isConfigured(settings)) return { success: false, error: 'Missing config' };
+    try {
+      const r = await sbFetch(settings, 'cases', { method: 'POST', body: JSON.stringify(c) });
+      return r.ok ? { success: true, error: null } : { success: false, error: await r.text() };
+    } catch (e: any) { return { success: false, error: e.message }; }
+  },
+
+  async deleteCase(settings: GlobalSettings, id: string): Promise<{ success: boolean; error: any }> {
+    if (!isConfigured(settings)) return { success: false, error: 'Missing config' };
+    try {
+      const r = await sbFetch(settings, `cases?id=eq.${id}`, { method: 'DELETE' });
+      return r.ok ? { success: true, error: null } : { success: false, error: await r.text() };
+    } catch (e: any) { return { success: false, error: e.message }; }
+  },
+
+  // ══════════════════════════════════════════════════════════════════
+  // 用户账号（新增）
+  // ══════════════════════════════════════════════════════════════════
+
+  async getAllUsers(settings: GlobalSettings): Promise<{ data: User[] | null; error: any }> {
+    if (!isConfigured(settings)) return { data: null, error: 'Missing config' };
+    try {
+      const r = await sbFetch(settings, 'users?select=*');
+      if (!r.ok) {
+        if (r.status === 404) return { data: [], error: null };
+        return { data: null, error: `Supabase ${r.status}: ${await r.text()}` };
+      }
+      return { data: await r.json(), error: null };
+    } catch (e: any) { return { data: null, error: e.message }; }
+  },
+
+  async upsertUser(settings: GlobalSettings, u: User): Promise<{ success: boolean; error: any }> {
+    if (!isConfigured(settings)) return { success: false, error: 'Missing config' };
+    try {
+      const r = await sbFetch(settings, 'users', { method: 'POST', body: JSON.stringify(u) });
+      return r.ok ? { success: true, error: null } : { success: false, error: await r.text() };
+    } catch (e: any) { return { success: false, error: e.message }; }
+  },
+
+  async deleteUser(settings: GlobalSettings, id: string): Promise<{ success: boolean; error: any }> {
+    if (!isConfigured(settings)) return { success: false, error: 'Missing config' };
+    try {
+      const r = await sbFetch(settings, `users?id=eq.${id}`, { method: 'DELETE' });
+      return r.ok ? { success: true, error: null } : { success: false, error: await r.text() };
+    } catch (e: any) { return { success: false, error: e.message }; }
+  },
+
+  // ══════════════════════════════════════════════════════════════════
+  // 一键全量推送（首次迁移用）
+  // ══════════════════════════════════════════════════════════════════
+
+  async pushAllLocalData(
+    settings: GlobalSettings,
+    refs: ReferenceCase[],
+    cases: CaseData[],
+    users: User[]
+  ): Promise<{ success: boolean; message: string }> {
+    if (!isConfigured(settings)) return { success: false, message: 'Supabase 未配置' };
+    let ok = 0, fail = 0;
+    for (const r of refs)  { const res = await this.upsertReference(settings, r); res.success ? ok++ : fail++; }
+    for (const c of cases) { const res = await this.upsertCase(settings, c);      res.success ? ok++ : fail++; }
+    for (const u of users) { const res = await this.upsertUser(settings, u);      res.success ? ok++ : fail++; }
+    return { success: fail === 0, message: `推送完成：成功 ${ok} 条，失败 ${fail} 条` };
+  },
 };
