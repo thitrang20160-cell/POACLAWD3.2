@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { CaseData, GlobalSettings, ReferenceCase, RiskAnalysis, POAOutline, POAOutlineSection } from "../types";
+import { CaseData, GlobalSettings, ReferenceCase, RiskAnalysis, POAOutline } from "../types";
 
 // ── AI 调用层 ──────────────────────────────────────────────────────────
 const callDeepSeek = async (key: string, sys: string, user: string): Promise<string> => {
@@ -210,22 +210,6 @@ Return the complete corrected 3-section ODR appeal with all sections at 700-950 
   }
 
   return result;
-};
-
-// ═══════════════════════════════════════════════════════════════════════
-// 3. 一键生成完整 POA（兼容旧流程）
-// ═══════════════════════════════════════════════════════════════════════
-export const generatePOA = async (
-  _apiKey: string,
-  data: Partial<CaseData>,
-  settings: GlobalSettings,
-  risk: RiskAnalysis,
-  fileEvidence: string,
-  similarCase?: ReferenceCase
-): Promise<string> => {
-  // 内部直接调用两步流程，对外保持兼容
-  const outline = await generatePOAOutline(data, settings, risk, fileEvidence, similarCase);
-  return expandOutlineToPOA(outline, data, settings, risk, fileEvidence, similarCase);
 };
 
 // ═══════════════════════════════════════════════════════════════════════

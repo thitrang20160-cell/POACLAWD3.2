@@ -1,6 +1,6 @@
 export type ViolationType = 'IP' | 'Counterfeit' | 'Performance' | 'Related' | 'Other';
 export type SupplyChainType = 'Private Label' | 'Authorized Distributor' | 'Wholesale' | 'Dropshipping';
-export type CaseStatus = 'pending' | 'reviewed' | 'submitted' | 'rejected' | 'success' | 'fail';
+export type CaseStatus = 'pending' | 'reviewed' | 'submitted' | 'success' | 'fail';
 export type UserRole = 'super_admin' | 'admin' | 'client';
 export type AIProvider = 'gemini' | 'deepseek';
 
@@ -103,8 +103,6 @@ export interface GlobalSettings {
   deepseekKey: string;
   supabaseUrl: string;
   supabaseKey: string;
-  walmartClientId: string;
-  walmartClientSecret: string;
   enableSimulationMode: boolean;
   strategyGeneral: string;
   strategyLogistics: string;

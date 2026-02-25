@@ -4,10 +4,9 @@ import {
   CheckCircle, XCircle, BrainCircuit, UploadCloud, Library, Plus, Trash2,
   Upload, Loader2, Wand2, RefreshCw, Search, LogOut, User, Users, Edit2,
   UserPlus, KeyRound, Gavel, Send, Cloud, CloudLightning, Wifi, WifiOff,
-  Crown, FileDown, Eye, EyeOff, TrendingUp, TrendingDown, Clock, CheckSquare,
-  XSquare, MessageSquare, BookMarked, Zap, ChevronRight, ChevronDown,
-  Store, AlertOctagon, BarChart2, ArrowRight, Pencil, Server, AlertTriangle,
-  ThumbsUp, ThumbsDown, Bookmark, ScanSearch
+  Crown, FileDown, Eye, EyeOff, TrendingUp, Clock, CheckSquare,
+  XSquare, MessageSquare, BookMarked, Zap, Store, Server,
+  ThumbsUp, ThumbsDown, ScanSearch
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend } from 'recharts';
 
@@ -26,7 +25,7 @@ import { parseFile } from './services/fileService';
 import { submitPOAToWalmart } from './services/walmartService';
 import {
   CaseData, GlobalSettings, RiskAnalysis, ViolationType, POAOutline,
-  POAOutlineSection, ReferenceCase, User as UserType, UserRole, StoreProfile, CaseNote,
+  ReferenceCase, User as UserType, UserRole, StoreProfile, CaseNote,
 } from './types';
 import { RiskBadge } from './components/RiskBadge';
 
@@ -37,7 +36,6 @@ const STATUS_CFG: Record<CaseData['status'], { label: string; color: string; ico
   pending:  { label: '待审核',   color: 'bg-amber-500/10 text-amber-400 border-amber-500/20',    icon: <Clock size={11}/> },
   reviewed: { label: '已审核',   color: 'bg-blue-500/10 text-blue-400 border-blue-500/20',       icon: <Eye size={11}/> },
   submitted:{ label: '已提交',   color: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20', icon: <Send size={11}/> },
-  rejected: { label: '已驳回',   color: 'bg-slate-500/10 text-slate-400 border-slate-500/20',    icon: <XSquare size={11}/> },
   success:  { label: '申诉成功', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', icon: <CheckSquare size={11}/> },
   fail:     { label: '申诉失败', color: 'bg-rose-500/10 text-rose-400 border-rose-500/20',       icon: <XSquare size={11}/> },
 };
@@ -98,8 +96,7 @@ export default function App() {
   const [storeProfiles, setStoreProfiles] = useState<StoreProfile[]>([]);
   const [settings, setSettings] = useState<GlobalSettings>({
     selectedProvider: 'gemini', apiKey: '', deepseekKey: '', supabaseUrl: '', supabaseKey: '',
-    walmartClientId: '', walmartClientSecret: '', enableSimulationMode: true,
-    strategyGeneral: '', strategyLogistics: '', strategyIP: ''
+    enableSimulationMode: true, strategyGeneral: '', strategyLogistics: '', strategyIP: ''
   });
 
   // Admin
@@ -141,7 +138,6 @@ export default function App() {
 
   // Two-phase generation
   const [genPhase, setGenPhase] = useState<'idle' | 'outline' | 'full'>('idle');
-  const [outline, setOutline] = useState<POAOutline | null>(null);
   const [editOutline, setEditOutline] = useState<POAOutline | null>(null);
   const [isGenOutline, setIsGenOutline] = useState(false);
   const [isExpanding, setIsExpanding] = useState(false);
@@ -295,7 +291,7 @@ export default function App() {
     try {
       const similarCase = refs.find(r => r.id === selRefId);
       const o = await generatePOAOutline(form, settings, r, fileCnt, similarCase);
-      setOutline(o); setEditOutline(JSON.parse(JSON.stringify(o))); // deep copy for editing
+      setEditOutline(JSON.parse(JSON.stringify(o)));
       setGenPhase('outline');
     } catch (e: any) { alert('大纲生成失败: ' + e.message); }
     finally { setIsGenOutline(false); }
@@ -327,7 +323,7 @@ export default function App() {
     await navigator.clipboard.writeText(strip(poa)); setCopyOk(true); setTimeout(() => setCopyOk(false), 2000);
   };
 
-  const handleResetGen = () => { setGenPhase('idle'); setOutline(null); setEditOutline(null); setPoa(''); setCn(''); setRisk(null); };
+  const handleResetGen = () => { setGenPhase('idle'); setEditOutline(null); setPoa(''); setCn(''); setRisk(null); };
 
   const saveCase = () => {
     if (!poa || !user) return;
@@ -839,10 +835,12 @@ export default function App() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   {[
-                    { k: 'companyName', ph: '公司名称 (Legal Name)' },
-                    { k: 'storeName', ph: '店铺名称 (Store Name)' },
-                    { k: 'caseId', ph: 'Case/Ticket ID' },
-                    { k: 'affectedCount', ph: '受影响数量 (14 SKUs)' },
+                    { k: 'companyName',    ph: '公司名称 (Legal Name)' },
+                    { k: 'storeName',      ph: '店铺名称 (Store Name)' },
+                    { k: 'caseId',         ph: 'Case/Ticket ID' },
+                    { k: 'affectedCount',  ph: '受影响数量 (14 SKUs)' },
+                    { k: 'productCategory',ph: '产品类目 (e.g. Electronics)' },
+                    { k: 'supplierInfo',   ph: '供应商信息 (可选，供 AI 参考)' },
                   ].map(({k, ph}) => (
                     <input key={k} className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-300 text-xs outline-none focus:border-blue-500/40 transition-colors" placeholder={ph} value={(form as any)[k]||''} onChange={e => setForm(p=>({...p,[k]:e.target.value}))}/>
                   ))}
@@ -1168,12 +1166,18 @@ export default function App() {
               ))}
             </div>
 
-            {/* Walmart API */}
+            {/* Walmart Submission */}
             <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 space-y-4">
-              <h3 className="text-base font-bold text-slate-200 flex items-center gap-2"><Send size={18}/> Walmart API</h3>
+              <h3 className="text-base font-bold text-slate-200 flex items-center gap-2"><Send size={18}/> 提交设置</h3>
               <div className={`flex items-center gap-3 p-3 rounded-xl border ${settings.enableSimulationMode?'bg-amber-500/8 border-amber-500/20':'bg-slate-950 border-slate-800'}`}>
                 <button onClick={() => {const s={...settings,enableSimulationMode:!settings.enableSimulationMode};setSettings(s);saveSettings(s);}} className={`w-9 h-5 rounded-full relative transition-colors flex-shrink-0 ${settings.enableSimulationMode?'bg-amber-500':'bg-slate-700'}`}><div className={`w-3 h-3 bg-white rounded-full absolute top-1 transition-all ${settings.enableSimulationMode?'left-5':'left-1'}`}/></button>
-                <div><div className={`text-xs font-bold ${settings.enableSimulationMode?'text-amber-400':'text-slate-400'}`}>{settings.enableSimulationMode?'模拟模式（安全）':'真实提交模式'}</div><div className="text-[10px] text-slate-600">关闭后通过 Walmart API 真实提交</div></div>
+                <div>
+                  <div className={`text-xs font-bold ${settings.enableSimulationMode?'text-amber-400':'text-slate-400'}`}>{settings.enableSimulationMode?'模拟模式（测试用）':'真实提交模式'}</div>
+                  <div className="text-[10px] text-slate-600">模拟模式下点击"提交 Walmart"只生成虚拟 Case ID，不会真实发送</div>
+                </div>
+              </div>
+              <div className="text-[11px] text-slate-600 bg-slate-950 border border-slate-800 rounded-xl p-3 leading-relaxed">
+                💡 <span className="text-slate-500">Walmart Marketplace API 暂不支持浏览器直接调用（CORS 限制）。如需真实提交，请将 POA 内容复制后手动提交至 Walmart Seller Center，或联系开发者部署服务端代理。</span>
               </div>
             </div>
 

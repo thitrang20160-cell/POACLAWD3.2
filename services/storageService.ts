@@ -82,7 +82,7 @@ export const saveCases  = (c: CaseData[]) => {
 // ── 设置 ──────────────────────────────────────────────────────────────
 const DEFAULT_SETTINGS: GlobalSettings = {
   selectedProvider: 'gemini', apiKey: '', deepseekKey: '',
-  supabaseUrl: '', supabaseKey: '', walmartClientId: '', walmartClientSecret: '',
+  supabaseUrl: '', supabaseKey: '',
   enableSimulationMode: true,
   strategyGeneral: '态度诚恳，数据导向。强调"以客户为中心"的整改决心。',
   strategyLogistics: '逻辑重点：排查 ERP 数据抓取延迟 → 立即更换承运商（FedEx/UPS）→ 开启周末配送模式。',
