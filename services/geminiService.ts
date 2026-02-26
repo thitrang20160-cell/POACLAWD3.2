@@ -248,9 +248,6 @@ Return ONLY the complete POA text. No preamble, no meta-comments.`;
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   let result = (await callAI(settings, sys + `\n\nToday's date: ${today}`, user)).trim();
 
-  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-  let result = (await callAI(settings, sys + `\n\nToday's date: ${today}`, user)).trim();
-
   // ── ODR 后置验证：检查每段是否达到 700 字符，不足则自动补写 ──────
   if (isODR) {
     const sectionRegex = /(\[SECTION \d+:[^\]]+\])([\s\S]*?)(?=\[SECTION \d+:|$)/gi;
